@@ -27,11 +27,11 @@ const maps = {
     width: 1600,
     height: 1200,
     spawnPoints: [
-      { x: 800, y: 600 },
-      { x: 400, y: 300 },
-      { x: 1200, y: 300 },
-      { x: 400, y: 900 },
-      { x: 1200, y: 900 }
+      { x: 800, y: 600 },  // Cafeteria
+      { x: 400, y: 300 },  // Admin
+      { x: 1200, y: 300 }, // Navigation
+      { x: 400, y: 900 },  // Shields
+      { x: 1200, y: 900 }  // Storage
     ],
     walls: [],
     tasks: [
@@ -127,6 +127,7 @@ function resetGame(roomCode) {
   if (!room) return;
   
   const mapConfig = maps[room.gameState.map];
+  const spawnIndex = Math.floor(Math.random() * mapConfig.spawnPoints.length);
   
   // Assign roles
   const roles = assignRoles(room.players.size);
@@ -148,7 +149,8 @@ function resetGame(roomCode) {
       room.gameState.imposters.push(player.id);
     } else {
       room.gameState.crewmates.push(player.id);
-      const numTasks = 3 + Math.floor(Math.random() * 3);
+      // Assign random tasks to crewmates
+      const numTasks = 3 + Math.floor(Math.random() * 3); // 3-5 tasks per crewmate
       for (let i = 0; i < numTasks; i++) {
         const task = { ...mapConfig.tasks[Math.floor(Math.random() * mapConfig.tasks.length)] };
         task.assignedTo = player.id;
@@ -158,13 +160,19 @@ function resetGame(roomCode) {
     }
   });
   
-  room.gameState.totalTasks = room.gameState.tasks.filter(t => !t.assignedTo.startsWith('imposter')).length;
+  // FIX: Properly count crewmate tasks by looking up player roles
+  room.gameState.totalTasks = room.gameState.tasks.filter(t => {
+    const player = room.players.get(t.assignedTo);
+    return player && player.role !== 'imposter';
+  }).length;
+  
   room.gameState.phase = PHASE.TASKS;
   room.gameState.meetingActive = false;
   room.gameState.votes = {};
   room.gameState.bodyReported = false;
   room.gameState.emergencyCalled = false;
   
+  // Reset impostor kill cooldowns
   room.gameState.imposterKillCooldowns = {};
   room.gameState.imposters.forEach(id => {
     room.gameState.imposterKillCooldowns[id] = 0;
@@ -190,7 +198,9 @@ io.on('connection', (socket) => {
       });
     }
     
+    // Also emit the room code to all sockets in the room
     socket.to(room.code).emit('roomCreated', { roomCode: room.code });
+    
     console.log(`Room created: ${room.code}`);
   });
   
@@ -231,15 +241,17 @@ io.on('connection', (socket) => {
       y: 600 + (Math.random() - 0.5) * 200,
       completedTasks: 0,
       votedFor: null,
-      peerId: null
+      peerId: null // For WebRTC voice
     };
     
     room.players.set(playerId, player);
     playerSockets.set(socket.id, { roomCode: room.code, playerId });
     socket.join(room.code);
     
+    // Notify others
     socket.to(room.code).emit('playerJoined', player);
     
+    // Send current players to new player
     const playersList = Array.from(room.players.values());
     socket.emit('roomJoined', {
       success: true,
@@ -258,7 +270,7 @@ io.on('connection', (socket) => {
     console.log(`Player ${player.name} joined room ${room.code}`);
   });
   
-  // Update player info
+  // Update player info (name, color)
   socket.on('updatePlayer', (updates, callback) => {
     const data = playerSockets.get(socket.id);
     if (!data) {
@@ -279,6 +291,8 @@ io.on('connection', (socket) => {
     }
     
     Object.assign(player, updates);
+    
+    // Notify others
     socket.to(data.roomCode).emit('playerUpdated', { playerId: data.playerId, updates });
     
     if (typeof callback === 'function') {
@@ -300,7 +314,7 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Get voice peers
+  // Get voice peers in room
   socket.on('getVoicePeers', (callback) => {
     const data = playerSockets.get(socket.id);
     if (!data) {
@@ -356,6 +370,7 @@ io.on('connection', (socket) => {
     
     resetGame(data.roomCode);
     
+    // Notify all players
     io.to(data.roomCode).emit('gameStarted', {
       players: Array.from(room.players.values()),
       tasks: room.gameState.tasks,
@@ -380,9 +395,11 @@ io.on('connection', (socket) => {
     
     if (!player || !player.isAlive || room.gameState.phase !== PHASE.TASKS) return;
     
+    // Update position
     player.x = Math.max(0, Math.min(maps[room.gameState.map].width, movement.x));
     player.y = Math.max(0, Math.min(maps[room.gameState.map].height, movement.y));
     
+    // Broadcast to others
     socket.to(data.roomCode).emit('playerMoved', {
       playerId: data.playerId,
       x: player.x,
@@ -404,6 +421,7 @@ io.on('connection', (socket) => {
     room.gameState.meetingActive = true;
     room.gameState.phase = PHASE.MEETING;
     
+    // Reset votes
     room.gameState.votes = {};
     room.players.forEach((p) => {
       p.votedFor = null;
@@ -435,6 +453,7 @@ io.on('connection', (socket) => {
     room.gameState.meetingActive = true;
     room.gameState.phase = PHASE.MEETING;
     
+    // Reset votes
     room.gameState.votes = {};
     room.players.forEach((p) => {
       p.votedFor = null;
@@ -513,6 +532,7 @@ io.on('connection', (socket) => {
         totalTasks: room.gameState.totalTasks
       });
       
+      // Check win condition
       if (room.gameState.taskProgress >= room.gameState.totalTasks) {
         room.gameState.phase = PHASE.GAME_OVER;
         io.to(data.roomCode).emit('gameOver', {
@@ -527,7 +547,7 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Kill player
+  // Imposter kill
   socket.on('killPlayer', (targetId, callback) => {
     const data = playerSockets.get(socket.id);
     if (!data) return;
@@ -543,6 +563,7 @@ io.on('connection', (socket) => {
       return;
     }
     
+    // Check kill cooldown
     const cooldown = room.gameState.imposterKillCooldowns[player.id] || 0;
     if (Date.now() / 1000 - cooldown < room.settings.killCooldown) {
       if (typeof callback === 'function') {
@@ -551,6 +572,7 @@ io.on('connection', (socket) => {
       return;
     }
     
+    // Check distance (simplified - should check actual distance on server)
     const dx = player.x - target.x;
     const dy = player.y - target.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
@@ -562,6 +584,7 @@ io.on('connection', (socket) => {
       return;
     }
     
+    // Kill the target
     target.isAlive = false;
     room.gameState.imposterKillCooldowns[player.id] = Date.now() / 1000;
     
@@ -570,6 +593,7 @@ io.on('connection', (socket) => {
       killerId: data.playerId
     });
     
+    // Check if only imposters remain
     const aliveImposters = room.gameState.imposters.filter(id => {
       const p = room.players.get(id);
       return p && p.isAlive;
@@ -630,11 +654,13 @@ io.on('connection', (socket) => {
     room.gameState.bodyReported = false;
     room.gameState.emergencyCalled = false;
     
+    // Reset all votes
     room.gameState.votes = {};
     room.players.forEach((p) => {
       p.votedFor = null;
     });
     
+    // Respawn all alive players at random spawn points
     const mapConfig = maps[room.gameState.map];
     room.players.forEach((player) => {
       if (player.isAlive) {
@@ -652,7 +678,7 @@ io.on('connection', (socket) => {
     handleDisconnect(socket);
   });
   
-  // Disconnect
+  // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
     handleDisconnect(socket);
@@ -667,12 +693,15 @@ io.on('connection', (socket) => {
     
     const player = room.players.get(data.playerId);
     
+    // Remove player
     room.players.delete(data.playerId);
     playerSockets.delete(socket.id);
     socket.leave(data.roomCode);
     
+    // Notify others
     socket.to(data.roomCode).emit('playerLeft', { playerId: data.playerId });
     
+    // If host left, assign new host or dissolve room
     if (room.host === socket.id) {
       if (room.players.size > 0) {
         const newHost = room.players.values().next().value;
@@ -684,6 +713,7 @@ io.on('connection', (socket) => {
       }
     }
     
+    // If game in progress and player was alive, handle appropriately
     if (room.gameState.phase !== PHASE.LOBBY && player && player.isAlive) {
       if (player.role === 'imposter') {
         room.gameState.imposters = room.gameState.imposters.filter(id => id !== data.playerId);
@@ -691,6 +721,7 @@ io.on('connection', (socket) => {
         room.gameState.crewmates = room.gameState.crewmates.filter(id => id !== data.playerId);
       }
       
+      // Check win conditions
       const aliveImposters = room.gameState.imposters.filter(id => {
         const p = room.players.get(id);
         return p && p.isAlive;
@@ -720,5 +751,5 @@ app.get('/', (req, res) => {
 // Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🎮 Cosmic Deception server running on http://localhost:${PORT}`);
+  console.log(`Cosmic Deception server running on http://localhost:${PORT}`);
 });
