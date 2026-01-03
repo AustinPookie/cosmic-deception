@@ -37,7 +37,6 @@ class VoiceChat {
     };
     
     // Audio processing
-    this.audioContext = null;
     this.speakingThreshold = 0.02;
   }
   
@@ -115,7 +114,7 @@ class VoiceChat {
     }
     
     const config = {
-      ...this.iceServers,
+      iceServers: this.iceServers.iceServers,
       iceCandidatePoolSize: 10
     };
     
@@ -199,7 +198,7 @@ class VoiceChat {
     }
     
     const config = {
-      ...this.iceServers,
+      iceServers: this.iceServers.iceServers,
       iceCandidatePoolSize: 10
     };
     
