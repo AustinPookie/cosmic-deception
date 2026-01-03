@@ -165,7 +165,7 @@ function resetGame(roomCode) {
     const player = room.players.get(t.assignedTo);
     return player && player.role !== 'imposter';
   }).length;
-  
+
   room.gameState.phase = PHASE.TASKS;
   room.gameState.meetingActive = false;
   room.gameState.votes = {};
@@ -415,7 +415,10 @@ io.on('connection', (socket) => {
     const room = rooms.get(data.roomCode);
     const player = room.players.get(data.playerId);
     
-    if (!player || !player.isAlive || room.gameState.bodyReported) return;
+    if (!player || !player.isAlive || room.gameState.bodyReported) {
+      if (typeof callback === 'function') callback({ success: false, message: 'Cannot report body' });
+      return;
+    }
     
     room.gameState.bodyReported = true;
     room.gameState.meetingActive = true;
@@ -447,7 +450,10 @@ io.on('connection', (socket) => {
     const room = rooms.get(data.roomCode);
     const player = room.players.get(data.playerId);
     
-    if (!player || !player.isAlive || room.gameState.emergencyCalled) return;
+    if (!player || !player.isAlive || room.gameState.emergencyCalled) {
+      if (typeof callback === 'function') callback({ success: false, message: 'Emergency cooldown active' });
+      return;
+    }
     
     room.gameState.emergencyCalled = true;
     room.gameState.meetingActive = true;
