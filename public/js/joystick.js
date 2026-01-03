@@ -1,5 +1,6 @@
 /**
  * Virtual Joystick for Mobile Game Controls
+ * Handles touch events and provides movement data
  */
 
 class VirtualJoystick {
@@ -13,6 +14,7 @@ class VirtualJoystick {
     
     this.active = false;
     this.touchId = null;
+    this.useMouse = false;
     this.centerX = 0;
     this.centerY = 0;
     this.currentX = 0;
@@ -25,10 +27,13 @@ class VirtualJoystick {
   }
   
   init() {
+    // Touch events
     this.zone.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
     this.zone.addEventListener('touchmove', this.handleTouchMove.bind(this), { passive: false });
     this.zone.addEventListener('touchend', this.handleTouchEnd.bind(this));
+    this.zone.addEventListener('touchcancel', this.handleTouchEnd.bind(this));
     
+    // Mouse events (for testing)
     this.zone.addEventListener('mousedown', this.handleMouseDown.bind(this));
     document.addEventListener('mousemove', this.handleMouseMove.bind(this));
     document.addEventListener('mouseup', this.handleMouseUp.bind(this));
@@ -36,6 +41,7 @@ class VirtualJoystick {
   
   handleTouchStart(e) {
     e.preventDefault();
+    
     if (this.active) return;
     
     const touch = e.changedTouches[0];
@@ -47,10 +53,13 @@ class VirtualJoystick {
     this.centerY = rect.top + rect.height / 2;
     
     this.updatePosition(touch.clientX, touch.clientY);
+    
+    this.base.classList.add('active');
   }
   
   handleTouchMove(e) {
     if (!this.active) return;
+    
     e.preventDefault();
     
     for (let i = 0; i < e.changedTouches.length; i++) {
@@ -74,6 +83,7 @@ class VirtualJoystick {
   
   handleMouseDown(e) {
     if (this.active) return;
+    
     this.active = true;
     this.useMouse = true;
     
@@ -82,6 +92,7 @@ class VirtualJoystick {
     this.centerY = rect.top + rect.height / 2;
     
     this.updatePosition(e.clientX, e.clientY);
+    this.base.classList.add('active');
   }
   
   handleMouseMove(e) {
@@ -106,11 +117,14 @@ class VirtualJoystick {
     this.currentX = clampedDistance * Math.cos(angle);
     this.currentY = clampedDistance * Math.sin(angle);
     
+    // Update visual stick position
     this.stick.style.transform = `translate(calc(-50% + ${this.currentX}px), calc(-50% + ${this.currentY}px))`;
     
+    // Calculate normalized movement (0-1)
     const normalizedX = (this.currentX / this.maxRadius) * this.sensitivity;
     const normalizedY = (this.currentY / this.maxRadius) * this.sensitivity;
     
+    // Call movement callback
     this.onMove({
       x: normalizedX,
       y: normalizedY,
@@ -128,18 +142,35 @@ class VirtualJoystick {
     this.currentY = 0;
     
     this.stick.style.transform = 'translate(-50%, -50%)';
+    this.base.classList.remove('active');
+    
     this.onEnd();
+  }
+  
+  getPosition() {
+    return {
+      x: this.currentX,
+      y: this.currentY
+    };
   }
   
   getNormalizedDirection() {
     const magnitude = Math.sqrt(this.currentX * this.currentX + this.currentY * this.currentY);
-    if (magnitude === 0) return { x: 0, y: 0 };
+    
+    if (magnitude === 0) {
+      return { x: 0, y: 0 };
+    }
     
     return {
       x: this.currentX / magnitude,
       y: this.currentY / magnitude
     };
   }
+  
+  isActive() {
+    return this.active;
+  }
 }
 
+// Export for use in game.js
 window.VirtualJoystick = VirtualJoystick;
