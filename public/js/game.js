@@ -1,1246 +1,1024 @@
 /**
- * Cosmic Deception - Main Game Logic
- * Among Us-style mobile game with voice chat
+ * Cosmic Deception - Game Client
+ * Main game logic, rendering, and player interactions
  */
 
-class Game {
-  constructor() {
-    // Socket connection
-    this.socket = io();
-    this.playerId = null;
-    this.roomCode = null;
+// ========================================
+// Game Configuration Constants
+// ========================================
+// These constants define core game settings that may need adjustment
+const CONFIG = {
+    // Map dimensions (must match server)
+    MAP_WIDTH: 2000,
+    MAP_HEIGHT: 2000,
+    
+    // Visual settings
+    BACKGROUND_COLOR: '#0a0a1a',
+    GRID_COLOR: '#1a1a3a',
+    GRID_SIZE: 100,
+    
+    // Player settings
+    PLAYER_COLORS: [
+        '#ff4444', // Red
+        '#4444ff', // Blue
+        '#44ff44', // Green
+        '#ffff44', // Yellow
+        '#ffaa00', // Orange
+        '#aa44ff', // Purple
+        '#44ffff', // Cyan
+        '#ff44ff'  // Magenta
+    ],
+    
+    // Ship settings
+    SHIP_SIZES: {
+        small: { radius: 15, speed: 5, handling: 0.1 },
+        medium: { radius: 20, speed: 4, handling: 0.08 },
+        large: { radius: 25, speed: 3, handling: 0.06 }
+    },
+    
+    // Combat settings
+    WEAPON_COOLDOWNS: {
+        primary: 10,
+        secondary: 60,
+        special: 180
+    },
+    
+    // UI settings
+    CHAT_MAX_MESSAGES: 50,
+    CHAT_MAX_LENGTH: 200,
+    NOTIFICATION_DURATION: 3000
+};
+
+// ========================================
+// Global Game State
+// ========================================
+const game = {
+    // Connection state
+    connected: false,
+    socket: null,
+    playerId: null,
     
     // Game state
-    this.state = {
-      phase: 'lobby',
-      players: [],
-      localPlayer: null,
-      map: 'skeld',
-      tasks: [],
-      imposters: [],
-      voted: false,
-      voteTarget: null
-    };
+    phase: 'menu', // menu, lobby, playing, ended
+    players: new Map(),
+    ships: new Map(),
+    asteroids: [],
+    projectiles: [],
     
-    // Canvas and rendering
-    this.canvas = document.getElementById('game-canvas');
-    this.ctx = this.canvas.getContext('2d');
-    this.camera = { x: 0, y: 0 };
-    this.scale = 1;
+    // Local player data
+    localPlayer: null,
+    localShip: null,
     
-    // Controls
-    this.joystick = null;
-    this.moveDirection = { x: 0, y: 0 };
-    this.moveSpeed = 4;
+    // Input state
+    inputs: {
+        thrust: false,
+        brake: false,
+        rotateLeft: false,
+        rotateRight: false,
+        firePrimary: false,
+        fireSecondary: false,
+        activateAbility: -1
+    },
     
-    // Voice chat
-    this.voiceChat = null;
-    this.isVoiceMuted = false;
+    // Camera
+    camera: {
+        x: 0,
+        y: 0,
+        zoom: 1
+    },
     
-    // UI elements
-    this.screens = {
-      splash: document.getElementById('splash-screen'),
-      menu: document.getElementById('menu-screen'),
-      lobby: document.getElementById('lobby-screen'),
-      game: document.getElementById('game-screen'),
-      meeting: document.getElementById('meeting-screen'),
-      gameover: document.getElementById('gameover-screen')
-    };
+    // Canvas context
+    canvas: null,
+    ctx: null,
     
-    // Player colors
-    this.colors = [
-      '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
-      '#FFA500', '#800080', '#008000', '#000080', '#FFC0CB', '#A52A2A',
-      '#808080', '#000000', '#4B0082', '#40E0D0', '#FA8072', '#EE82EE',
-      '#FFD700', '#ADFF2F'
-    ];
+    // Timing
+    lastUpdate: 0,
+    deltaTime: 0,
     
-    // Map configurations
-    this.maps = {
-      skeld: {
-        name: 'The Skeld',
-        width: 1600,
-        height: 1200,
-        backgroundColor: '#1a1a2e',
-        walls: this.generateSkeldWalls(),
-        spawnPoints: [
-          { x: 800, y: 600 },
-          { x: 400, y: 300 },
-          { x: 1200, y: 300 },
-          { x: 400, y: 900 },
-          { x: 1200, y: 900 }
-        ],
-        tasks: [],
-        vents: [
-          { x: 400, y: 400 },
-          { x: 1200, y: 400 },
-          { x: 400, y: 800 },
-          { x: 1200, y: 800 }
-        ]
-      }
-    };
+    // Assets
+    images: {},
     
-    // Task definitions
-    this.taskTemplates = [
-      { id: 'fix_wires', name: 'Fix Wires', type: 'short', duration: 3000 },
-      { id: 'fuel_engine', name: 'Fuel Engine', type: 'long', duration: 6000 },
-      { id: 'clean_filter', name: 'Clean Filter', type: 'medium', duration: 4500 },
-      { id: 'align_output', name: 'Align Output', type: 'short', duration: 3000 },
-      { id: 'divert_power', name: 'Divert Power', type: 'medium', duration: 4500 },
-      { id: 'unlock_manifolds', name: 'Unlock Manifolds', type: 'short', duration: 2500 },
-      { id: 'start_reactor', name: 'Start Reactor', type: 'medium', duration: 5000 },
-      { id: 'calibrate_distributor', name: 'Calibrate Distributor', type: 'long', duration: 7000 }
-    ];
+    // Audio
+    audioContext: null,
+    sounds: {}
+};
+
+// ========================================
+// Initialization
+// ========================================
+function initGame() {
+    console.log('[Game] Initializing game client...');
     
-    // Initialize
-    this.init();
-  }
-  
-  init() {
-    this.setupCanvas();
-    this.setupEventListeners();
-    this.setupSocketListeners();
-    this.setupJoystick();
+    // Get canvas context
+    game.canvas = document.getElementById('game-canvas');
+    game.ctx = game.canvas.getContext('2d');
     
-    // Start game loop
-    this.gameLoop();
-  }
-  
-  generateSkeldWalls() {
-    // Simplified wall data for The Skeld
-    return [
-      // Outer walls
-      { x: 0, y: 0, width: 1600, height: 20 },
-      { x: 0, y: 1180, width: 1600, height: 20 },
-      { x: 0, y: 0, width: 20, height: 1200 },
-      { x: 1580, y: 0, width: 20, height: 1200 },
-      
-      // Cafeteria walls
-      { x: 600, y: 400, width: 20, height: 400 },
-      { x: 1000, y: 400, width: 20, height: 400 },
-      
-      // Admin walls
-      { x: 200, y: 200, width: 400, height: 20 },
-      { x: 200, y: 200, width: 20, height: 200 },
-      
-      // Navigation walls
-      { x: 1000, y: 100, width: 20, height: 300 },
-      { x: 1200, y: 100, width: 300, height: 20 },
-      
-      // Shields walls
-      { x: 200, y: 800, width: 20, height: 300 },
-      { x: 200, y: 800, width: 300, height: 20 },
-      
-      // Storage walls
-      { x: 1300, y: 700, width: 20, height: 400 },
-      { x: 1300, y: 700, width: 300, height: 20 },
-      
-      // Reactor walls
-      { x: 700, y: 100, width: 20, height: 200 },
-      { x: 900, y: 100, width: 20, height: 200 },
-      
-      // Electrical walls
-      { x: 700, y: 900, width: 200, height: 20 },
-      { x: 700, y: 900, width: 20, height: 200 },
-      
-      // Medbay walls
-      { x: 400, y: 500, width: 200, height: 20 },
-    ];
-  }
-  
-  setupCanvas() {
-    const resizeCanvas = () => {
-      const container = document.getElementById('canvas-container');
-      this.canvas.width = container.clientWidth;
-      this.canvas.height = container.clientHeight;
-      this.scale = Math.min(
-        this.canvas.width / this.maps.skeld.width,
-        this.canvas.height / this.maps.skeld.height
-      );
-    };
-    
+    // Set up canvas
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
-  }
-  
-  setupEventListeners() {
-    // Splash screen
-    document.getElementById('play-btn').addEventListener('click', () => {
-      this.showScreen('menu');
-    });
     
-    // Menu screen
-    document.getElementById('create-room-btn').addEventListener('click', () => {
-      this.createRoom();
-    });
+    // Set up input handlers
+    setupKeyboardInput();
+    setupTouchControls();
     
-    document.getElementById('join-room-btn').addEventListener('click', () => {
-      const code = document.getElementById('room-code-input').value.toUpperCase();
-      if (code.length === 6) {
-        this.joinRoom(code);
-      } else {
-        this.showToast('Please enter a valid room code', 'error');
-      }
-    });
+    // Set up UI handlers
+    setupUIHandlers();
     
-    // Lobby screen
-    document.getElementById('player-name-input').addEventListener('input', (e) => {
-      this.updatePlayerName(e.target.value);
-    });
+    // Start game loop
+    game.lastUpdate = performance.now();
+    requestAnimationFrame(gameLoop);
     
-    document.getElementById('start-game-btn').addEventListener('click', () => {
-      this.startGame();
-    });
-    
-    document.getElementById('leave-lobby-btn').addEventListener('click', () => {
-      this.leaveRoom();
-    });
-    
-    document.getElementById('copy-code-btn').addEventListener('click', () => {
-      navigator.clipboard.writeText(this.roomCode);
-      this.showToast('Room code copied!', 'success');
-    });
-    
-    // Game screen
-    document.getElementById('action-btn').addEventListener('click', () => {
-      this.handleAction();
-    });
-    
-    document.getElementById('emergency-btn').addEventListener('click', () => {
-      this.callEmergency();
-    });
-    
-    document.getElementById('voice-btn').addEventListener('click', () => {
-      this.toggleVoiceModal();
-    });
-    
-    document.getElementById('mute-btn').addEventListener('click', () => {
-      if (!this.voiceChat) {
-        this.showToast('Voice chat not initialized', 'warning');
-        return;
-      }
-      this.toggleMute();
-    });
-    
-    // Meeting screen
-    document.getElementById('skip-vote-btn').addEventListener('click', () => {
-      this.skipVote();
-    });
-    
-    document.getElementById('confirm-vote-btn').addEventListener('click', () => {
-      this.confirmVote();
-    });
-    
-    // Game over screen
-    document.getElementById('return-lobby-btn').addEventListener('click', () => {
-      this.returnToLobby();
-    });
-    
-    // Settings modal
-    document.getElementById('settings-btn').addEventListener('click', () => {
-      this.showModal('settings-modal');
-    });
-    
-    document.getElementById('close-settings').addEventListener('click', () => {
-      this.hideModal('settings-modal');
-    });
-    
-    document.getElementById('save-settings').addEventListener('click', () => {
-      this.saveSettings();
-    });
-    
-    // Voice modal
-    document.getElementById('close-voice-modal').addEventListener('click', () => {
-      this.hideModal('voice-modal');
-    });
-    
-    document.getElementById('toggle-mic-btn').addEventListener('click', () => {
-      this.toggleMute();
-    });
-    
-    // Task modal
-    document.getElementById('close-task-modal').addEventListener('click', () => {
-      this.hideModal('task-modal');
-    });
-  }
-  
-  setupSocketListeners() {
-    // Join room
-    this.socket.on('roomJoined', (response) => {
-      if (response.success) {
-        this.playerId = response.playerId;
-        this.roomCode = response.roomCode;
-        this.state.players = response.players;
-        this.state.map = response.map;
-        
-        document.getElementById('lobby-room-code').textContent = response.roomCode;
-        document.getElementById('max-players').textContent = response.settings.maxPlayers;
-        
-        this.updatePlayerList();
-        this.generateColorSelector();
-        
-        if (this.socket.id === response.host) {
-          document.getElementById('start-game-btn').disabled = false;
-        }
-        
-        this.showScreen('lobby');
-      }
-    });
-    
-    // Player joined
-    this.socket.on('playerJoined', (player) => {
-      this.state.players.push(player);
-      this.updatePlayerList();
-      this.showToast(`${player.name} joined the game`, 'success');
-    });
-    
-    // Player left
-    this.socket.on('playerLeft', (data) => {
-      const player = this.state.players.find(p => p.id === data.playerId);
-      if (player) {
-        this.showToast(`${player.name} left the game`, 'warning');
-      }
-      this.state.players = this.state.players.filter(p => p.id !== data.playerId);
-      this.updatePlayerList();
-    });
-    
-    // Player updated
-    this.socket.on('playerUpdated', (data) => {
-      const player = this.state.players.find(p => p.id === data.playerId);
-      if (player) {
-        Object.assign(player, data.updates);
-        this.updatePlayerList();
-      }
-    });
-    
-    // Host changed
-    this.socket.on('hostChanged', (data) => {
-      const player = this.state.players.find(p => p.id === data.newHostId);
-      if (player) {
-        this.showToast(`${player.name} is now the host`, 'success');
-      }
-      document.getElementById('start-game-btn').disabled = (this.socket.id !== player?.socketId);
-    });
-    
-    // Game started
-    this.socket.on('gameStarted', (data) => {
-      this.state.players = data.players;
-      this.state.tasks = data.tasks;
-      this.state.imposters = data.imposters;
-      this.state.phase = 'tasks';
-      this.state.voted = false;
-      this.state.voteTarget = null;
-      
-      // Initialize voice chat
-      this.initVoiceChat();
-      
-      // Update local player reference
-      this.state.localPlayer = this.state.players.find(p => p.id === this.playerId);
-      
-      // Show game screen
-      this.showScreen('game');
-      
-      // Update task progress
-      this.updateTaskProgress(0, data.totalTasks);
-      
-      // Show role notification
-      if (this.state.localPlayer.role === 'imposter') {
-        this.showToast('You are the IMPOSTER!', 'error');
-      } else {
-        this.showToast('Complete all tasks to win!', 'success');
-      }
-    });
-    
-    // Player moved
-    this.socket.on('playerMoved', (data) => {
-      const player = this.state.players.find(p => p.id === data.playerId);
-      if (player) {
-        player.x = data.x;
-        player.y = data.y;
-      }
-    });
-    
-    // Task completed
-    this.socket.on('taskCompleted', (data) => {
-      this.updateTaskProgress(data.progress, data.totalTasks);
-      
-      const player = this.state.players.find(p => p.id === data.playerId);
-      if (player) {
-        this.showToast(`${player.name} completed a task!`, 'success');
-      }
-    });
-    
-    // Player killed
-    this.socket.on('playerKilled', (data) => {
-      const player = this.state.players.find(p => p.id === data.playerId);
-      if (player) {
-        player.isAlive = false;
-        this.showToast(`${player.name} was killed!`, 'error');
-        
-        // Remove player from voice chat
-        if (this.voiceChat) {
-          this.voiceChat.disconnectFromPeer(data.playerId);
-        }
-      }
-    });
-    
-    // Meeting called
-    this.socket.on('meetingCalled', (data) => {
-      this.state.phase = 'meeting';
-      this.showMeetingScreen(data);
-    });
-    
-    // Meeting ended
-    this.socket.on('meetingEnded', (results) => {
-      this.state.phase = 'tasks';
-      this.showScreen('game');
-      
-      if (results.ejected) {
-        this.showToast(`${results.ejected.name} was ejected!`, 'warning');
-      }
-      
-      // Reset voting state
-      this.state.voted = false;
-      this.state.voteTarget = null;
-    });
-    
-    // Game over
-    this.socket.on('gameOver', (data) => {
-      this.state.phase = 'game_over';
-      this.showGameOverScreen(data);
-    });
-  }
-  
-  setupJoystick() {
-    this.joystick = new VirtualJoystick({
-      zoneId: 'joystick-zone',
-      baseId: 'joystick-base',
-      stickId: 'joystick-stick',
-      maxRadius: 50,
-      sensitivity: 1,
-      onMove: (data) => {
-        this.moveDirection.x = data.x;
-        this.moveDirection.y = data.y;
-      },
-      onEnd: () => {
-        this.moveDirection.x = 0;
-        this.moveDirection.y = 0;
-      }
-    });
-  }
-  
-  async initVoiceChat() {
-    if (!VoiceChat.isSupported()) {
-      this.showToast('Voice chat not supported on this device', 'warning');
-      return;
-    }
-    
-    this.voiceChat = new VoiceChat({
-      socket: this.socket,
-      playerId: this.playerId,
-      onPeerJoin: (playerId) => {
-        const player = this.state.players.find(p => p.id === playerId);
-        if (player) {
-          console.log(`Connected to voice with ${player.name}`);
-        }
-      },
-      onPeerLeave: (playerId) => {
-        const player = this.state.players.find(p => p.id === playerId);
-        if (player) {
-          console.log(`Disconnected from voice with ${player.name}`);
-        }
-      },
-      onSpeaking: (playerId, isSpeaking) => {
-        // Update UI to show who's speaking
-      }
-    });
-    
-    await this.voiceChat.init();
-  }
-  
-  createRoom() {
-    const maxPlayers = parseInt(document.getElementById('max-players-slider').value);
-    const settings = {
-      maxPlayers,
-      map: document.getElementById('map-select').value
-    };
-    
-    this.socket.emit('createRoom', settings, (response) => {
-      if (response && response.success) {
-        // Automatically join the created room
-        this.joinRoom(response.roomCode);
-      } else {
-        this.showToast('Failed to create room', 'error');
-      }
-    });
-  }
-  
-  joinRoom(roomCode) {
-    const playerName = document.getElementById('player-name-input').value || 'Player';
-    const selectedColor = document.querySelector('.color-option.selected');
-    const color = selectedColor ? selectedColor.dataset.color : this.colors[0];
-    
-    this.socket.emit('joinRoom', {
-      roomCode,
-      playerName,
-      color
-    }, (response) => {
-      if (!response.success) {
-        this.showToast(response.message, 'error');
-      }
-    });
-  }
-  
-  updatePlayerName(name) {
-    this.socket.emit('updatePlayer', { name });
-  }
-  
-  updatePlayerColor(color) {
-    this.socket.emit('updatePlayer', { color });
-  }
-  
-  generateColorSelector() {
-    const selector = document.getElementById('color-selector');
-    selector.innerHTML = '';
-    
-    this.colors.forEach((color, index) => {
-      const option = document.createElement('div');
-      option.className = 'color-option';
-      option.style.backgroundColor = color;
-      option.dataset.color = color;
-      option.dataset.index = index;
-      
-      if (index === 0) {
-        option.classList.add('selected');
-      }
-      
-      option.addEventListener('click', () => {
-        document.querySelectorAll('.color-option').forEach(opt => {
-          opt.classList.remove('selected');
-        });
-        option.classList.add('selected');
-        this.updatePlayerColor(color);
-      });
-      
-      selector.appendChild(option);
-    });
-  }
-  
-  updatePlayerList() {
-    const list = document.getElementById('player-list');
-    list.innerHTML = '';
-    
-    document.getElementById('player-count').textContent = this.state.players.length;
-    
-    this.state.players.forEach((player, index) => {
-      const card = document.createElement('div');
-      card.className = 'player-card';
-      if (this.socket.id === player.socketId) {
-        card.classList.add('host');
-      }
-      
-      card.innerHTML = `
-        <div class="player-color" style="background-color: ${player.color}"></div>
-        <div class="player-info">
-          <div class="player-name">${player.name}</div>
-          <div class="player-status">${this.socket.id === player.socketId ? 'You' : ''}</div>
-        </div>
-        ${this.socket.id === player.socketId ? '<span class="player-badge">👤</span>' : ''}
-      `;
-      
-      list.appendChild(card);
-    });
-  }
-  
-  startGame() {
-    this.socket.emit('startGame', (response) => {
-      if (!response.success) {
-        this.showToast(response.message, 'error');
-      }
-    });
-  }
-  
-  leaveRoom() {
-    this.socket.emit('leaveRoom');
-    this.showScreen('menu');
-    this.roomCode = null;
-    this.playerId = null;
-    
-    // Disconnect voice chat
-    if (this.voiceChat) {
-      this.voiceChat.disconnect();
-      this.voiceChat = null;
-    }
-  }
-  
-  handleAction() {
-    if (this.state.phase !== 'tasks') return;
-    
-    const player = this.state.localPlayer;
-    if (!player || !player.isAlive) return;
-    
-    // Find closest interactable object
-    let closestTask = null;
-    let closestTaskDist = Infinity;
-    let closestBody = null;
-    let closestBodyDist = Infinity;
-    
-    // Check for nearby tasks
-    for (const task of this.state.tasks) {
-      if (task.assignedTo === this.playerId && !task.completed) {
-        const dx = player.x - task.x;
-        const dy = player.y - task.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance < 60 && distance < closestTaskDist) {
-          closestTask = task;
-          closestTaskDist = distance;
-        }
-      }
-    }
-    
-    // Check for dead bodies
-    for (const otherPlayer of this.state.players) {
-      if (otherPlayer.id !== this.playerId && !otherPlayer.isAlive) {
-        const dx = player.x - otherPlayer.x;
-        const dy = player.y - otherPlayer.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance < 60 && distance < closestBodyDist) {
-          closestBody = otherPlayer;
-          closestBodyDist = distance;
-        }
-      }
-    }
-    
-    // Prioritize bodies over tasks
-    if (closestBody && closestBodyDist < closestTaskDist) {
-      this.reportBody();
-    } else if (closestTask) {
-      this.showTaskModal(closestTask);
-    }
-  }
-  
-  reportBody() {
-    this.socket.emit('reportBody', (response) => {
-      if (!response.success) {
-        this.showToast(response.message, 'error');
-      }
-    });
-  }
-  
-  callEmergency() {
-    if (this.state.phase !== 'tasks') return;
-    
-    const player = this.state.localPlayer;
-    if (!player || !player.isAlive) return;
-    
-    this.socket.emit('emergencyMeeting', (response) => {
-      if (!response.success) {
-        this.showToast(response.message, 'error');
-      }
-    });
-  }
-  
-  showTaskModal(task) {
-    const modal = document.getElementById('task-modal');
-    document.getElementById('task-title').textContent = task.name;
-    
-    const container = document.getElementById('task-container');
-    
-    // Create different task types
-    if (task.id.includes('wire')) {
-      this.createWireTask(container, task);
-    } else {
-      container.innerHTML = `
-        <div class="task-progress-container">
-          <div class="task-progress-bar">
-            <div class="task-progress-fill" id="task-modal-progress" style="width: 0%"></div>
-          </div>
-          <p>Click repeatedly to complete...</p>
-        </div>
-      `;
-      
-      // Simple click task
-      let clicks = 0;
-      const totalClicks = 5;
-      
-      const clickHandler = () => {
-        clicks++;
-        const progress = (clicks / totalClicks) * 100;
-        const progressBar = document.getElementById('task-modal-progress');
-        if (progressBar) {
-          progressBar.style.width = `${progress}%`;
-        }
-        
-        if (clicks >= totalClicks) {
-          container.removeEventListener('click', clickHandler);
-          this.completeTask(task.id);
-          this.hideModal('task-modal');
-        }
-      };
-      
-      container.addEventListener('click', clickHandler, { once: true });
-    }
-    
-    this.showModal('task-modal');
-  }
-  
-  createWireTask(container, task) {
-    const colors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00'];
-    const leftWires = [...colors].sort(() => Math.random() - 0.5);
-    const rightWires = [...colors].sort(() => Math.random() - 0.5);
-    
-    container.innerHTML = `
-      <div class="task-wire-container">
-        <div class="wire-pair">
-          <div class="wire-col">
-            ${leftWires.map((color, i) => `
-              <div class="wire" data-color="${color}" data-side="left" data-index="${i}" 
-                   style="background-color: ${color}"></div>
-            `).join('')}
-          </div>
-          <div class="wire-col">
-            ${rightWires.map((color, i) => `
-              <div class="wire" data-color="${color}" data-side="right" data-index="${i}"
-                   style="background-color: ${color}"></div>
-            `).join('')}
-          </div>
-        </div>
-      </div>
-    `;
-    
-    let selectedWire = null;
-    let connected = 0;
-    
-    container.querySelectorAll('.wire').forEach(wire => {
-      wire.addEventListener('click', (e) => {
-        const clickedWire = e.target;
-        
-        if (!selectedWire) {
-          selectedWire = clickedWire;
-          clickedWire.classList.add('selected');
-        } else {
-          const color1 = selectedWire.dataset.color;
-          const color2 = clickedWire.dataset.color;
-          
-          if (color1 === color2 && selectedWire.dataset.side !== clickedWire.dataset.side) {
-            // Correct connection
-            connected++;
-            selectedWire.style.opacity = '0.3';
-            clickedWire.style.opacity = '0.3';
-            selectedWire.classList.remove('selected');
-            selectedWire = null;
-            
-            if (connected >= colors.length) {
-              this.completeTask(task.id);
-              this.hideModal('task-modal');
-            }
-          } else {
-            // Wrong connection
-            this.showToast('Wrong connection!', 'error');
-            selectedWire.classList.remove('selected');
-            selectedWire = null;
-          }
-        }
-      });
-    });
-  }
-  
-  completeTask(taskId) {
-    this.socket.emit('completeTask', taskId, (response) => {
-      if (response.success) {
-        this.showToast('Task completed!', 'success');
-      }
-    });
-  }
-  
-  showMeetingScreen(data) {
-    const grid = document.getElementById('voting-grid');
-    grid.innerHTML = '';
-    
-    document.getElementById('meeting-title').textContent = 
-      data.type === 'body' ? 'Body Reported' : 'Emergency Meeting';
-    
-    this.state.players.forEach(player => {
-      const card = document.createElement('div');
-      card.className = 'vote-card';
-      if (!player.isAlive) card.classList.add('dead');
-      
-      card.innerHTML = `
-        <div class="player-avatar" style="background-color: ${player.color}"></div>
-        <div class="player-name">${player.name}</div>
-        <div class="vote-indicator"></div>
-      `;
-      
-      if (player.isAlive && player.id !== this.playerId) {
-        card.addEventListener('click', () => {
-          document.querySelectorAll('.vote-card').forEach(c => c.classList.remove('selected'));
-          card.classList.add('selected');
-          this.state.voteTarget = player.id;
-          document.getElementById('confirm-vote-btn').disabled = false;
-        });
-      }
-      
-      grid.appendChild(card);
-    });
-    
-    this.startMeetingTimer(data.discussionTime, data.votingTime);
-    this.showScreen('meeting');
-  }
-  
-  startMeetingTimer(discussionTime, votingTime) {
-    const countdown = document.getElementById('meeting-countdown');
-    const phase = document.getElementById('meeting-phase');
-    
-    let timeLeft = discussionTime;
-    phase.textContent = 'Discussion';
-    countdown.textContent = timeLeft;
-    
-    const timer = setInterval(() => {
-      timeLeft--;
-      countdown.textContent = timeLeft;
-      
-      if (timeLeft <= 0) {
-        if (phase.textContent === 'Discussion') {
-          phase.textContent = 'Voting';
-          timeLeft = votingTime;
-          
-          // Enable skip vote button
-          document.getElementById('skip-vote-btn').disabled = false;
-          
-          // Auto-end meeting if everyone voted
-          if (!this.state.voted) {
-            this.showToast('Submit your vote!', 'warning');
-          }
-        } else {
-          clearInterval(timer);
-          this.endMeeting();
-        }
-      }
-    }, 1000);
-    
-    this.meetingTimer = timer;
-  }
-  
-  skipVote() {
-    if (this.state.voted) return;
-    
-    this.socket.emit('skipVote', (response) => {
-      if (response.success) {
-        this.state.voted = true;
-        document.getElementById('confirm-vote-btn').textContent = 'Vote Submitted';
-        document.getElementById('confirm-vote-btn').disabled = true;
-        document.getElementById('skip-vote-btn').disabled = true;
-      }
-    });
-  }
-  
-  confirmVote() {
-    if (this.state.voted || !this.state.voteTarget) return;
-    
-    this.socket.emit('vote', this.state.voteTarget, (response) => {
-      if (response.success) {
-        this.state.voted = true;
-        document.getElementById('confirm-vote-btn').textContent = 'Vote Submitted';
-        document.getElementById('confirm-vote-btn').disabled = true;
-        document.getElementById('skip-vote-btn').disabled = true;
-      }
-    });
-  }
-  
-  endMeeting() {
-    this.socket.emit('endMeeting', {});
-  }
-  
-  showGameOverScreen(data) {
-    const container = document.getElementById('gameover-winners');
-    const title = document.getElementById('gameover-title');
-    const reason = document.getElementById('gameover-reason');
-    
-    reason.textContent = data.reason;
-    
-    if (data.winners === 'crewmates') {
-      title.textContent = 'Crewmates Win!';
-      title.style.color = '#10B981';
-      container.innerHTML = '<span class="winner-icon">✅</span>';
-    } else {
-      title.textContent = 'Imposters Win!';
-      title.style.color = '#EF4444';
-      container.innerHTML = '<span class="winner-icon">🔪</span>';
-    }
-    
-    this.showScreen('gameover');
-    
-    // Disconnect voice chat
-    if (this.voiceChat) {
-      this.voiceChat.disconnect();
-      this.voiceChat = null;
-    }
-  }
-  
-  returnToLobby() {
-    this.showScreen('lobby');
-    this.state.phase = 'lobby';
-    
-    // Reset player states
-    this.state.players.forEach(p => {
-      p.isAlive = true;
-      p.role = 'crewmate';
-    });
-  }
-  
-  toggleVoiceModal() {
-    this.showModal('voice-modal');
-  }
-  
-  toggleMute() {
-    if (!this.voiceChat) return;
-    
-    this.isMuted = this.voiceChat.toggleMute();
-    
-    const voiceBtn = document.getElementById('voice-btn');
-    const muteBtn = document.getElementById('mute-btn');
-    
-    if (this.isMuted) {
-      voiceBtn.classList.add('muted');
-      muteBtn.classList.add('muted');
-      this.showToast('Microphone muted', 'warning');
-    } else {
-      voiceBtn.classList.remove('muted');
-      muteBtn.classList.remove('muted');
-      this.showToast('Microphone unmuted', 'success');
-    }
-  }
-  
-  updateTaskProgress(completed, total) {
-    const fill = document.getElementById('task-progress-fill');
-    const text = document.getElementById('task-progress-text');
-    
-    const percentage = total > 0 ? (completed / total) * 100 : 0;
-    fill.style.width = `${percentage}%`;
-    text.textContent = `${completed}/${total}`;
-  }
-  
-  showScreen(screenName) {
-    Object.values(this.screens).forEach(screen => {
-      screen.classList.remove('active');
-    });
-    this.screens[screenName].classList.add('active');
-  }
-  
-  showModal(modalId) {
-    document.getElementById(modalId).classList.add('active');
-  }
-  
-  hideModal(modalId) {
-    document.getElementById(modalId).classList.remove('active');
-  }
-  
-  showToast(message, type = 'success') {
-    const container = document.getElementById('toast-container');
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    toast.textContent = message;
-    container.appendChild(toast);
-    
-    setTimeout(() => {
-      toast.remove();
-    }, 3000);
-  }
-  
-  saveSettings() {
-    // Settings are saved in the modal state
-    this.hideModal('settings-modal');
-    this.showToast('Settings saved!', 'success');
-  }
-  
-  // Game loop
-  gameLoop() {
-    this.update();
-    this.render();
-    requestAnimationFrame(() => this.gameLoop());
-  }
-  
-  update() {
-    if (this.state.phase !== 'tasks') return;
-    
-    const player = this.state.localPlayer;
-    if (!player || !player.isAlive) return;
-    
-    // Apply movement
-    if (this.moveDirection.x !== 0 || this.moveDirection.y !== 0) {
-      const map = this.maps[this.state.map];
-      
-      let newX = player.x + this.moveDirection.x * this.moveSpeed;
-      let newY = player.y + this.moveDirection.y * this.moveSpeed;
-      
-      // Boundary check
-      newX = Math.max(20, Math.min(map.width - 20, newX));
-      newY = Math.max(20, Math.min(map.height - 20, newY));
-      
-      // Simple wall collision
-      const wall = this.checkWallCollision(newX, newY, 20);
-      if (!wall) {
-        player.x = newX;
-        player.y = newY;
-        
-        // Send movement to server
-        this.socket.emit('playerMove', { x: player.x, y: player.y });
-      }
-    }
-    
-    // Update action button state
-    this.updateActionButtonState();
-  }
-  
-  checkWallCollision(x, y, radius) {
-    const map = this.maps[this.state.map];
-    
-    for (const wall of map.walls) {
-      const closestX = Math.max(wall.x, Math.min(x, wall.x + wall.width));
-      const closestY = Math.max(wall.y, Math.min(y, wall.y + wall.height));
-      
-      const dx = x - closestX;
-      const dy = y - closestY;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      
-      if (distance < radius) {
-        return wall;
-      }
-    }
-    
-    return null;
-  }
-  
-  updateActionButtonState() {
-    const player = this.state.localPlayer;
-    const actionBtn = document.getElementById('action-btn');
-    
-    if (!player || !player.isAlive) {
-      actionBtn.classList.remove('active');
-      return;
-    }
-    
-    let canInteract = false;
-    
-    // Check for nearby tasks
-    for (const task of this.state.tasks) {
-      if (task.assignedTo === this.playerId && !task.completed) {
-        const dx = player.x - task.x;
-        const dy = player.y - task.y;
-        if (Math.sqrt(dx * dx + dy * dy) < 60) {
-          canInteract = true;
-          break;
-        }
-      }
-    }
-    
-    // Check for dead bodies
-    if (!canInteract) {
-      for (const otherPlayer of this.state.players) {
-        if (otherPlayer.id !== this.playerId && !otherPlayer.isAlive) {
-          const dx = player.x - otherPlayer.x;
-          const dy = player.y - otherPlayer.y;
-          if (Math.sqrt(dx * dx + dy * dy) < 60) {
-            canInteract = true;
-            break;
-          }
-        }
-      }
-    }
-    
-    if (canInteract) {
-      actionBtn.classList.add('active');
-    } else {
-      actionBtn.classList.remove('active');
-    }
-  }
-  
-  render() {
-    if (this.state.phase !== 'tasks') return;
-    
-    const ctx = this.ctx;
-    const canvas = this.canvas;
-    const map = this.maps[this.state.map];
-    
-    // Clear canvas
-    ctx.fillStyle = '#0a0a1a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    // Calculate camera position
-    const player = this.state.localPlayer;
-    if (player) {
-      this.camera.x = player.x - canvas.width / 2;
-      this.camera.y = player.y - canvas.height / 2;
-    }
-    
-    // Apply camera transform
-    ctx.save();
-    ctx.translate(-this.camera.x, -this.camera.y);
-    
-    // Draw map background
-    ctx.fillStyle = map.backgroundColor;
-    ctx.fillRect(0, 0, map.width, map.height);
-    
-    // Draw floor pattern
-    this.drawFloorPattern();
-    
-    // Draw walls
-    ctx.fillStyle = '#334155';
-    map.walls.forEach(wall => {
-      ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
-      ctx.strokeStyle = '#475569';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(wall.x, wall.y, wall.width, wall.height);
-    });
-    
-    // Draw tasks
-    this.state.tasks.forEach(task => {
-      if (!task.completed) {
-        const isNearby = player && 
-          Math.sqrt(Math.pow(player.x - task.x, 2) + Math.pow(player.y - task.y, 2)) < 80;
-        
-        ctx.fillStyle = isNearby ? '#10B981' : '#64748B';
-        ctx.beginPath();
-        ctx.arc(task.x, task.y, 15, 0, Math.PI * 2);
-        ctx.fill();
-        
-        ctx.fillStyle = '#fff';
-        ctx.font = '12px Rubik';
-        ctx.textAlign = 'center';
-        ctx.fillText('📋', task.x, task.y + 5);
-      }
-    });
-    
-    // Draw vents
-    map.vents.forEach(vent => {
-      ctx.fillStyle = '#1E293B';
-      ctx.beginPath();
-      ctx.ellipse(vent.x, vent.y, 20, 10, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#475569';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    });
-    
-    // Draw players (sorted by Y for depth)
-    const sortedPlayers = [...this.state.players].sort((a, b) => a.y - b.y);
-    
-    sortedPlayers.forEach(p => {
-      this.drawPlayer(p);
-    });
-    
-    // Draw vision cone for local player
-    if (player && player.isAlive) {
-      this.drawVisionCone(player);
-    }
-    
-    ctx.restore();
-  }
-  
-  drawFloorPattern() {
-    const ctx = this.ctx;
-    const map = this.maps[this.state.map];
-    
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-    ctx.lineWidth = 1;
-    
-    for (let x = 0; x < map.width; x += 50) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, map.height);
-      ctx.stroke();
-    }
-    
-    for (let y = 0; y < map.height; y += 50) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(map.width, y);
-      ctx.stroke();
-    }
-  }
-  
-  drawPlayer(player) {
-    const ctx = this.ctx;
-    
-    // Draw shadow
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-    ctx.beginPath();
-    ctx.ellipse(player.x, player.y + 18, 18, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Draw body
-    ctx.fillStyle = player.color;
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, 20, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Draw visor
-    ctx.fillStyle = '#87CEEB';
-    ctx.beginPath();
-    ctx.ellipse(player.x + 5, player.y - 5, 12, 8, -0.2, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Draw visor reflection
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.beginPath();
-    ctx.ellipse(player.x + 8, player.y - 7, 4, 3, -0.2, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Draw dead indicator
-    if (!player.isAlive) {
-      ctx.strokeStyle = '#EF4444';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(player.x - 15, player.y - 15);
-      ctx.lineTo(player.x + 15, player.y + 15);
-      ctx.moveTo(player.x + 15, player.y - 15);
-      ctx.lineTo(player.x - 15, player.y + 15);
-      ctx.stroke();
-    }
-    
-    // Draw name
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 12px Rubik';
-    ctx.textAlign = 'center';
-    ctx.fillText(player.name, player.x, player.y - 30);
-    
-    // Draw role indicator (imposter)
-    if (player.role === 'imposter' && player.id === this.playerId) {
-      ctx.fillStyle = '#EF4444';
-      ctx.font = '10px Rubik';
-      ctx.fillText('🔪', player.x, player.y - 45);
-    }
-    
-    // Draw task indicator
-    if (player.isAlive && player.role === 'crewmate' && player.completedTasks > 0) {
-      const taskProgress = player.completedTasks;
-      ctx.fillStyle = '#10B981';
-      ctx.font = '10px Rubik';
-      ctx.fillText(`${'✓'.repeat(Math.min(taskProgress, 5))}`, player.x, player.y + 35);
-    }
-  }
-  
-  drawVisionCone(player) {
-    const ctx = this.ctx;
-    
-    // Create gradient for vision
-    const gradient = ctx.createRadialGradient(
-      player.x, player.y, 0,
-      player.x, player.y, 300
-    );
-    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.1)');
-    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, 300, 0, Math.PI * 2);
-    ctx.fill();
-  }
+    console.log('[Game] Game client initialized');
 }
 
-// Initialize game when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-  window.game = new Game();
-});
+/**
+ * Resize canvas to fill container
+ */
+function resizeCanvas() {
+    const container = document.getElementById('game-container');
+    if (container && game.canvas) {
+        game.canvas.width = container.clientWidth;
+        game.canvas.height = container.clientHeight;
+        
+        // Recenter camera if in game
+        if (game.localShip) {
+            game.camera.x = game.localShip.x - game.canvas.width / 2;
+            game.camera.y = game.localShip.y - game.canvas.height / 2;
+        }
+    }
+}
+
+/**
+ * Set up keyboard input handlers
+ */
+function setupKeyboardInput() {
+    document.addEventListener('keydown', (e) => {
+        handleKeyDown(e.code, true);
+    });
+    
+    document.addEventListener('keyup', (e) => {
+        handleKeyUp(e.code, false);
+    });
+}
+
+/**
+ * Handle key down events
+ */
+function handleKeyDown(code, state) {
+    // Ignore input if not in game
+    if (game.phase !== 'playing') return;
+    
+    // Map key codes to actions
+    switch (code) {
+        case 'KeyW':
+        case 'ArrowUp':
+            game.inputs.thrust = state;
+            break;
+        case 'KeyS':
+        case 'ArrowDown':
+            game.inputs.brake = state;
+            break;
+        case 'KeyA':
+        case 'ArrowLeft':
+            game.inputs.rotateLeft = state;
+            break;
+        case 'KeyD':
+        case 'ArrowRight':
+            game.inputs.rotateRight = state;
+            break;
+        case 'Space':
+            game.inputs.firePrimary = state;
+            break;
+        case 'KeyE':
+            game.inputs.fireSecondary = state;
+            break;
+        case 'KeyQ':
+        case 'Digit1':
+            if (state) game.inputs.activateAbility = 0;
+            break;
+        case 'KeyF':
+        case 'Digit2':
+            if (state) game.inputs.activateAbility = 1;
+            break;
+        case 'KeyR':
+        case 'Digit3':
+            if (state) game.inputs.activateAbility = 2;
+            break;
+    }
+}
+
+/**
+ * Handle key up events
+ */
+function handleKeyUp(code, state) {
+    // Ignore input if not in game
+    if (game.phase !== 'playing') return;
+    
+    switch (code) {
+        case 'KeyW':
+        case 'ArrowUp':
+            game.inputs.thrust = false;
+            break;
+        case 'KeyS':
+        case 'ArrowDown':
+            game.inputs.brake = false;
+            break;
+        case 'KeyA':
+        case 'ArrowLeft':
+            game.inputs.rotateLeft = false;
+            break;
+        case 'KeyD':
+        case 'ArrowRight':
+            game.inputs.rotateRight = false;
+            break;
+        case 'Space':
+            game.inputs.firePrimary = false;
+            break;
+        case 'KeyE':
+            game.inputs.fireSecondary = false;
+            break;
+        case 'KeyQ':
+        case 'Digit1':
+        case 'KeyF':
+        case 'Digit2':
+        case 'KeyR':
+        case 'Digit3':
+            game.inputs.activateAbility = -1;
+            break;
+    }
+}
+
+/**
+ * Set up touch controls for mobile
+ */
+function setupTouchControls() {
+    const joystick = document.getElementById('joystick');
+    const joystickStick = document.getElementById('joystick-stick');
+    
+    if (joystick && joystickStick) {
+        let joystickData = { x: 0, y: 0, active: false };
+        
+        joystick.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            joystickData.active = true;
+            
+            const touch = e.touches[0];
+            const rect = joystick.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            updateJoystickVisual(touch.clientX, touch.clientY, centerX, centerY, joystickStick, rect);
+        });
+        
+        joystick.addEventListener('touchmove', (e) => {
+            if (!joystickData.active) return;
+            e.preventDefault();
+            
+            const touch = e.touches[0];
+            const rect = joystick.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            updateJoystickVisual(touch.clientX, touch.clientY, centerX, centerY, joystickStick, rect);
+        });
+        
+        joystick.addEventListener('touchend', () => {
+            joystickData.active = false;
+            joystickStick.style.transform = 'translate(-50%, -50%)';
+            game.inputs.thrust = false;
+            game.inputs.rotateLeft = false;
+            game.inputs.rotateRight = false;
+        });
+    }
+    
+    // Fire button
+    const fireBtn = document.getElementById('fire-btn');
+    if (fireBtn) {
+        fireBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            game.inputs.firePrimary = true;
+        });
+        
+        fireBtn.addEventListener('touchend', () => {
+            game.inputs.firePrimary = false;
+        });
+    }
+}
+
+/**
+ * Update joystick visual position
+ */
+function updateJoystickVisual(touchX, touchY, centerX, centerY, stick, rect) {
+    const maxDistance = rect.width / 2 - 30;
+    let deltaX = touchX - centerX;
+    let deltaY = touchY - centerY;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    
+    if (distance > maxDistance) {
+        deltaX = (deltaX / distance) * maxDistance;
+        deltaY = (deltaY / distance) * maxDistance;
+    }
+    
+    stick.style.transform = `translate(calc(-50% + ${deltaX}px), calc(-50% + ${deltaY}px))`;
+    
+    // Update game inputs based on joystick position
+    game.inputs.thrust = deltaY < -10;
+    game.inputs.brake = deltaY > 10;
+    game.inputs.rotateLeft = deltaX < -10;
+    game.inputs.rotateRight = deltaX > 10;
+}
+
+/**
+ * Set up UI event handlers
+ */
+function setupUIHandlers() {
+    // Main menu buttons
+    const playBtn = document.getElementById('play-btn');
+    if (playBtn) {
+        playBtn.addEventListener('click', () => connectToServer());
+    }
+    
+    // Lobby buttons
+    const redTeamBtn = document.getElementById('red-team-btn');
+    const blueTeamBtn = document.getElementById('blue-team-btn');
+    const readyBtn = document.getElementById('ready-btn');
+    
+    if (redTeamBtn) {
+        redTeamBtn.addEventListener('click', () => selectTeam('red'));
+    }
+    
+    if (blueTeamBtn) {
+        blueTeamBtn.addEventListener('click', () => selectTeam('blue'));
+    }
+    
+    if (readyBtn) {
+        readyBtn.addEventListener('click', () => toggleReady());
+    }
+    
+    // Chat
+    const chatInput = document.getElementById('chat-input');
+    const chatSend = document.getElementById('chat-send');
+    
+    if (chatInput && chatSend) {
+        chatSend.addEventListener('click', () => sendChatMessage(chatInput.value));
+        
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendChatMessage(chatInput.value);
+            }
+        });
+    }
+}
+
+// ========================================
+// Server Connection
+// ========================================
+function connectToServer() {
+    const nameInput = document.getElementById('player-name');
+    const colorInput = document.getElementById('player-color');
+    
+    const playerName = nameInput ? nameInput.value.trim() : 'Player';
+    const playerColor = colorInput ? colorInput.value : '#00ff00';
+    
+    // Connect to server
+    const serverUrl = window.location.hostname === 'localhost' 
+        ? 'http://localhost:3000' 
+        : window.location.origin;
+    
+    game.socket = io(serverUrl, {
+        transports: ['websocket', 'polling'],
+        query: {
+            name: playerName,
+            color: playerColor
+        }
+    });
+    
+    game.socket.on('connect', () => {
+        console.log('[Socket] Connected to server');
+        game.connected = true;
+        showNotification('Connected to server', 'success');
+    });
+    
+    game.socket.on('disconnect', (reason) => {
+        console.log('[Socket] Disconnected from server:', reason);
+        game.connected = false;
+        showNotification('Disconnected from server: ' + reason, 'error');
+        returnToMenu();
+    });
+    
+    game.socket.on('connect_error', (error) => {
+        console.error('[Socket] Connection error:', error);
+        showNotification('Failed to connect to server', 'error');
+    });
+    
+    game.socket.on('init', (data) => {
+        console.log('[Game] Received init data');
+        game.playerId = data.playerId;
+        game.localPlayer = data.gameState.players.find(p => p.id === game.playerId);
+        
+        // Apply game config
+        if (data.config) {
+            CONFIG.MAP_WIDTH = data.config.mapWidth || CONFIG.MAP_WIDTH;
+            CONFIG.MAP_HEIGHT = data.config.mapHeight || CONFIG.MAP_HEIGHT;
+        }
+        
+        showLobby();
+    });
+    
+    game.socket.on('gameState', (state) => {
+        updateGameState(state);
+    });
+    
+    game.socket.on('playerList', (players) => {
+        updatePlayerList(players);
+    });
+    
+    game.socket.on('teamUpdate', (teams) => {
+        updateTeamDisplay(teams);
+    });
+    
+    game.socket.on('chat', (message) => {
+        addChatMessage(message);
+    });
+    
+    game.socket.on('notification', (data) => {
+        showNotification(data.message, data.type || 'info');
+    });
+}
+
+/**
+ * Disconnect from server and return to menu
+ */
+function disconnectFromServer() {
+    if (game.socket) {
+        game.socket.disconnect();
+        game.socket = null;
+    }
+    
+    game.connected = false;
+    game.playerId = null;
+    game.localPlayer = null;
+    game.localShip = null;
+    game.players.clear();
+    game.ships.clear();
+    game.asteroids = [];
+    game.projectiles = [];
+}
+
+/**
+ * Return to main menu
+ */
+function returnToMenu() {
+    disconnectFromServer();
+    
+    document.getElementById('main-menu').style.display = 'flex';
+    document.getElementById('lobby-screen').style.display = 'none';
+    document.getElementById('game-hud').style.display = 'none';
+    
+    game.phase = 'menu';
+}
+
+// ========================================
+// Lobby Management
+// ========================================
+function showLobby() {
+    document.getElementById('main-menu').style.display = 'none';
+    document.getElementById('lobby-screen').style.display = 'flex';
+    
+    game.phase = 'lobby';
+    
+    showNotification('Welcome to the lobby!', 'success');
+}
+
+function selectTeam(team) {
+    if (!game.socket || game.phase !== 'lobby') return;
+    
+    game.socket.emit('teamSelect', team);
+    
+    // Update UI
+    document.querySelectorAll('.team-select-btn').forEach(btn => {
+        btn.classList.remove('selected');
+    });
+    
+    const btn = document.querySelector(`[data-team="${team}"]`);
+    if (btn) {
+        btn.classList.add('selected');
+    }
+}
+
+function toggleReady() {
+    if (!game.socket || game.phase !== 'lobby') return;
+    
+    // Ready toggle is handled by team selection
+    // This function can be extended for additional ready logic
+    console.log('[Game] Ready status toggled');
+}
+
+// ========================================
+// Game State Updates
+// ========================================
+function updateGameState(state) {
+    // Update game phase
+    if (state.gamePhase !== game.phase) {
+        game.phase = state.gamePhase;
+        
+        if (game.phase === 'playing') {
+            document.getElementById('lobby-screen').style.display = 'none';
+            document.getElementById('game-hud').style.display = 'block';
+            document.getElementById('mobile-controls').classList.add('visible');
+        }
+    }
+    
+    // Update players
+    state.players.forEach(p => {
+        game.players.set(p.id, p);
+        
+        if (p.id === game.playerId) {
+            game.localPlayer = p;
+        }
+    });
+    
+    // Update ships
+    state.ships.forEach(s => {
+        game.ships.set(s.id, s);
+        
+        if (s.playerId === game.playerId) {
+            game.localShip = s;
+            
+            // Update camera to follow player
+            game.camera.x = s.x - game.canvas.width / 2;
+            game.camera.y = s.y - game.canvas.height / 2;
+            
+            // Update HUD
+            updateHUD(s);
+        }
+    });
+    
+    // Update asteroids
+    game.asteroids = state.asteroids || [];
+    
+    // Update projectiles
+    game.projectiles = state.projectiles || [];
+    
+    // Update team scores
+    if (state.teams) {
+        updateTeamScores(state.teams);
+    }
+}
+
+/**
+ * Update player list in lobby
+ */
+function updatePlayerList(players) {
+    // Validate color format before using in HTML
+    const colorRegex = /^#[0-9A-Fa-f]{6}$/;
+    
+    ['red', 'blue', 'neutral'].forEach(team => {
+        const container = document.getElementById(`${team}-team-players`);
+        if (!container) return;
+        
+        container.innerHTML = '';
+        
+        const teamPlayers = players.filter(p => p.team === team);
+        
+        teamPlayers.forEach(p => {
+            // Validate color before using
+            const validColor = colorRegex.test(p.color) ? p.color : '#888888';
+            
+            const playerDiv = document.createElement('div');
+            playerDiv.className = 'team-player';
+            playerDiv.innerHTML = `
+                <div class="player-avatar" style="background-color: ${validColor}"></div>
+                <span class="player-name">${p.name}</span>
+                <span class="player-status">${p.id === game.playerId ? '(You)' : ''}</span>
+            `;
+            container.appendChild(playerDiv);
+        });
+    });
+}
+
+/**
+ * Update team display
+ */
+function updateTeamDisplay(teams) {
+    if (teams.red) {
+        const redScore = document.getElementById('red-score');
+        if (redScore) redScore.textContent = teams.red.score;
+        
+        const redCount = document.getElementById('red-player-count');
+        if (redCount) redCount.textContent = `${teams.red.playerCount || 0} players`;
+    }
+    
+    if (teams.blue) {
+        const blueScore = document.getElementById('blue-score');
+        if (blueScore) blueScore.textContent = teams.blue.score;
+        
+        const blueCount = document.getElementById('blue-player-count');
+        if (blueCount) blueCount.textContent = `${teams.blue.playerCount || 0} players`;
+    }
+}
+
+/**
+ * Update team scores
+ */
+function updateTeamScores(teams) {
+    if (teams.red) {
+        const redScoreEl = document.getElementById('score-red');
+        if (redScoreEl) redScoreEl.textContent = teams.red.score;
+    }
+    
+    if (teams.blue) {
+        const blueScoreEl = document.getElementById('score-blue');
+        if (blueScoreEl) blueScoreEl.textContent = teams.blue.score;
+    }
+}
+
+/**
+ * Update HUD with player stats
+ */
+function updateHUD(ship) {
+    // Health bar
+    const healthFill = document.getElementById('health-fill');
+    if (healthFill) {
+        healthFill.style.width = `${(ship.health / ship.maxHealth) * 100}%`;
+    }
+    
+    // Shield bar
+    const shieldFill = document.getElementById('shield-fill');
+    if (shieldFill) {
+        shieldFill.style.width = `${(ship.shield / ship.maxShield) * 100}%`;
+    }
+    
+    // Energy bar
+    const energyFill = document.getElementById('energy-fill');
+    if (energyFill) {
+        energyFill.style.width = `${(ship.energy / ship.maxEnergy) * 100}%`;
+    }
+    
+    // Player info
+    if (game.localPlayer) {
+        const nameEl = document.getElementById('player-info-name');
+        if (nameEl) nameEl.textContent = game.localPlayer.name;
+        
+        const teamEl = document.getElementById('player-info-team');
+        if (teamEl) {
+            teamEl.textContent = game.localPlayer.team;
+            teamEl.className = `player-info-team ${game.localPlayer.team}`;
+        }
+    }
+    
+    // Update minimap
+    updateMinimap();
+}
+
+/**
+ * Update minimap display
+ */
+function updateMinimap() {
+    const minimap = document.getElementById('minimap');
+    if (!minimap) return;
+    
+    minimap.innerHTML = '';
+    
+    // Scale factor
+    const scale = 150 / CONFIG.MAP_WIDTH;
+    
+    // Draw ships
+    game.ships.forEach(ship => {
+        const dot = document.createElement('div');
+        dot.className = 'minimap-dot';
+        dot.style.left = `${ship.x * scale}px`;
+        dot.style.top = `${ship.y * scale}px`;
+        dot.style.backgroundColor = ship.color || '#ffffff';
+        
+        if (ship.playerId === game.playerId) {
+            dot.classList.add('player');
+        }
+        
+        minimap.appendChild(dot);
+    });
+}
+
+// ========================================
+// Chat System
+// ========================================
+function sendChatMessage(message) {
+    if (!game.socket || !message.trim()) return;
+    
+    game.socket.emit('chat', message.trim());
+    
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+        chatInput.value = '';
+    }
+}
+
+function addChatMessage(data) {
+    const messagesContainer = document.getElementById('chat-messages');
+    if (!messagesContainer) return;
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'chat-message';
+    
+    if (data.sender) {
+        // Validate color before using
+        const colorRegex = /^#[0-9A-Fa-f]{6}$/;
+        const validColor = colorRegex.test(data.color) ? data.color : '#888888';
+        
+        messageDiv.innerHTML = `<span class="sender" style="color: ${validColor}">${data.sender}:</span> ${escapeHtml(data.message)}`;
+    } else {
+        messageDiv.className += ' system';
+        messageDiv.textContent = data.message;
+    }
+    
+    messagesContainer.appendChild(messageDiv);
+    
+    // Limit message count
+    while (messagesContainer.children.length > CONFIG.CHAT_MAX_MESSAGES) {
+        messagesContainer.removeChild(messagesContainer.firstChild);
+    }
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// ========================================
+// Notifications
+// ========================================
+function showNotification(message, type = 'info') {
+    const container = document.getElementById('notifications');
+    if (!container) return;
+    
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.innerHTML = `
+        <div class="notification-title">${type.charAt(0).toUpperCase() + type.slice(1)}</div>
+        <div class="notification-message">${escapeHtml(message)}</div>
+    `;
+    
+    container.appendChild(notification);
+    
+    // Remove after duration
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, CONFIG.NOTIFICATION_DURATION);
+}
+
+// ========================================
+// Game Loop
+// ========================================
+function gameLoop(timestamp) {
+    game.deltaTime = timestamp - game.lastUpdate;
+    game.lastUpdate = timestamp;
+    
+    // Send input to server
+    sendInputToServer();
+    
+    // Send heartbeat
+    sendHeartbeat();
+    
+    // Clear canvas
+    clearCanvas();
+    
+    // Draw game
+    if (game.phase === 'playing' || game.phase === 'lobby') {
+        drawBackground();
+        drawGrid();
+        drawAsteroids();
+        drawProjectiles();
+        drawShips();
+        drawUI();
+    }
+    
+    requestAnimationFrame(gameLoop);
+}
+
+/**
+ * Send input state to server
+ */
+function sendInputToServer() {
+    if (!game.socket || game.phase !== 'playing') return;
+    
+    game.socket.emit('input', {
+        inputs: {
+            thrust: game.inputs.thrust,
+            brake: game.inputs.brake,
+            rotateLeft: game.inputs.rotateLeft,
+            rotateRight: game.inputs.rotateRight,
+            firePrimary: game.inputs.firePrimary,
+            fireSecondary: game.inputs.fireSecondary,
+            activateAbility: game.inputs.activateAbility
+        }
+    });
+    
+    // Reset ability activation after sending
+    game.inputs.activateAbility = -1;
+}
+
+/**
+ * Send heartbeat to server
+ */
+function sendHeartbeat() {
+    if (!game.socket) return;
+    
+    game.socket.emit('heartbeat');
+}
+
+// ========================================
+// Rendering
+// ========================================
+function clearCanvas() {
+    const ctx = game.ctx;
+    
+    // Clear with background color
+    ctx.fillStyle = CONFIG.BACKGROUND_COLOR;
+    ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
+}
+
+function drawBackground() {
+    // Background is already drawn in clearCanvas
+}
+
+function drawGrid() {
+    const ctx = game.ctx;
+    const offsetX = game.camera.x % CONFIG.GRID_SIZE;
+    const offsetY = game.camera.y % CONFIG.GRID_SIZE;
+    
+    ctx.strokeStyle = CONFIG.GRID_COLOR;
+    ctx.lineWidth = 1;
+    
+    // Vertical lines
+    for (let x = -offsetX; x < game.canvas.width; x += CONFIG.GRID_SIZE) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, game.canvas.height);
+        ctx.stroke();
+    }
+    
+    // Horizontal lines
+    for (let y = -offsetY; y < game.canvas.height; y += CONFIG.GRID_SIZE) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(game.canvas.width, y);
+        ctx.stroke();
+    }
+}
+
+function drawAsteroids() {
+    const ctx = game.ctx;
+    
+    game.asteroids.forEach(asteroid => {
+        const screenX = asteroid.x - game.camera.x;
+        const screenY = asteroid.y - game.camera.y;
+        
+        // Skip if off screen
+        if (screenX < -asteroid.radius || screenX > game.canvas.width + asteroid.radius ||
+            screenY < -asteroid.radius || screenY > game.canvas.height + asteroid.radius) {
+            return;
+        }
+        
+        ctx.save();
+        ctx.translate(screenX, screenY);
+        ctx.rotate(asteroid.rotation);
+        
+        // Draw asteroid body
+        ctx.fillStyle = '#444455';
+        ctx.strokeStyle = '#666677';
+        ctx.lineWidth = 2;
+        
+        ctx.beginPath();
+        asteroid.vertices.forEach((vertex, i) => {
+            const x = Math.cos(vertex.angle) * asteroid.radius * vertex.radius;
+            const y = Math.sin(vertex.angle) * asteroid.radius * vertex.radius;
+            
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        });
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        
+        ctx.restore();
+    });
+}
+
+function drawShips() {
+    const ctx = game.ctx;
+    
+    game.ships.forEach(ship => {
+        const screenX = ship.x - game.camera.x;
+        const screenY = ship.y - game.camera.y;
+        
+        // Skip if off screen
+        if (screenX < -50 || screenX > game.canvas.width + 50 ||
+            screenY < -50 || screenY > game.canvas.height + 50) {
+            return;
+        }
+        
+        ctx.save();
+        ctx.translate(screenX, screenY);
+        ctx.rotate(ship.rotation);
+        
+        // Draw ship body
+        ctx.fillStyle = ship.color || '#888888';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        
+        // Ship shape (triangle)
+        ctx.beginPath();
+        ctx.moveTo(20, 0);
+        ctx.lineTo(-15, 12);
+        ctx.lineTo(-10, 0);
+        ctx.lineTo(-15, -12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        
+        // Draw thrust if moving
+        if (ship.thrust && ship.thrust > 0) {
+            ctx.fillStyle = '#ff8800';
+            ctx.beginPath();
+            ctx.moveTo(-12, 0);
+            ctx.lineTo(-25 - ship.thrust * 10, 0);
+            ctx.lineTo(-12, 5);
+            ctx.closePath();
+            ctx.fill();
+        }
+        
+        ctx.restore();
+        
+        // Draw name tag
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'center';
+        
+        const player = game.players.get(ship.playerId);
+        if (player) {
+            ctx.fillText(player.name, screenX, screenY - 35);
+        }
+        
+        // Draw health bar
+        const barWidth = 40;
+        const barHeight = 4;
+        const healthPercent = ship.health / ship.maxHealth;
+        
+        ctx.fillStyle = '#333333';
+        ctx.fillRect(screenX - barWidth / 2, screenY - 28, barWidth, barHeight);
+        
+        ctx.fillStyle = healthPercent > 0.5 ? '#44ff44' : healthPercent > 0.25 ? '#ffaa00' : '#ff4444';
+        ctx.fillRect(screenX - barWidth / 2, screenY - 28, barWidth * healthPercent, barHeight);
+    });
+}
+
+function drawProjectiles() {
+    const ctx = game.ctx;
+    
+    game.projectiles.forEach(proj => {
+        const screenX = proj.x - game.camera.x;
+        const screenY = proj.y - game.camera.y;
+        
+        // Skip if off screen
+        if (screenX < -10 || screenX > game.canvas.width + 10 ||
+            screenY < -10 || screenY > game.canvas.height + 10) {
+            return;
+        }
+        
+        ctx.fillStyle = '#ffff00';
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, 3, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
+function drawUI() {
+    // Additional UI rendering if needed
+}
+
+// ========================================
+// Utility Functions
+// ========================================
+
+/**
+ * Escape HTML to prevent XSS
+ */
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ========================================
+// Start Game
+// ========================================
+document.addEventListener('DOMContentLoaded', initGame);
+
+// Export for module usage if needed
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { game, initGame, CONFIG };
+}
