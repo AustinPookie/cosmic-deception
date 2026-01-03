@@ -109,6 +109,12 @@ class Game {
   init() {
     console.log('[Game] Initializing game...');
     
+    // CRITICAL: Ensure splash screen is visible and others are hidden
+    // This is a fallback in case CSS isn't loading properly
+    console.log('[Game] Managing screen visibility...');
+    this.showScreen('splash');
+    console.log('[Game] Screen visibility set to splash');
+    
     // Setup canvas first (critical for rendering)
     this.setupCanvas();
     
@@ -459,7 +465,7 @@ class Game {
       this.showGameOverScreen(data);
     });
   }
-  
+
   setupJoystick() {
     // Check if joystick elements exist before initializing
     const zone = document.getElementById('joystick-zone');
@@ -1311,7 +1317,7 @@ class Game {
     if (player && player.isAlive) {
       this.drawEnhancedVisionCone(player);
     }
-    
+
     ctx.restore();
     
     // Draw minimap in corner
