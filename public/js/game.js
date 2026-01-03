@@ -107,15 +107,29 @@ class Game {
   }
   
   init() {
-    console.log('[Game] Initializing game...');
+    console.log('[Game] Starting initialization...');
     
     // CRITICAL: Ensure splash screen is visible and others are hidden
     // This is a fallback in case CSS isn't loading properly
+    console.log('[Game] Verifying screen elements exist...');
+    
+    // Check if all screen elements exist
+    const expectedScreens = ['splash-screen', 'menu-screen', 'lobby-screen', 'game-screen', 'meeting-screen', 'game-over-screen'];
+    expectedScreens.forEach(screenId => {
+      const element = document.getElementById(screenId);
+      if (element) {
+        console.log(`[Game] Found: ${screenId}`);
+      } else {
+        console.error(`[Game] MISSING: ${screenId}`);
+      }
+    });
+    
     console.log('[Game] Managing screen visibility...');
     this.showScreen('splash');
     console.log('[Game] Screen visibility set to splash');
     
     // Setup canvas first (critical for rendering)
+    console.log('[Game] Setting up canvas...');
     this.setupCanvas();
     
     // Verify canvas was set up correctly
@@ -125,8 +139,11 @@ class Game {
       return;
     }
     
+    console.log('[Game] Setting up event listeners...');
     this.setupEventListeners();
+    console.log('[Game] Setting up socket listeners...');
     this.setupSocketListeners();
+    console.log('[Game] Setting up joystick...');
     this.setupJoystick();
     
     console.log('[Game] Game initialized, starting game loop');
@@ -219,104 +236,210 @@ class Game {
   }
   
   setupEventListeners() {
-    // Splash screen
-    document.getElementById('play-btn').addEventListener('click', () => {
-      this.showScreen('menu');
-    });
+    console.log('[Game] Setting up event listeners...');
+    
+    // Splash screen - Play button
+    const playBtn = document.getElementById('play-btn');
+    if (playBtn) {
+      console.log('[Game] Found play-btn element, attaching click listener');
+      playBtn.addEventListener('click', (e) => {
+        console.log('[Game] Play button clicked!');
+        this.showScreen('menu');
+      });
+    } else {
+      console.error('[Game] CRITICAL: play-btn element not found!');
+    }
     
     // Menu screen
-    document.getElementById('create-room-btn').addEventListener('click', () => {
-      this.createRoom();
-    });
+    const createRoomBtn = document.getElementById('create-room-btn');
+    if (createRoomBtn) {
+      createRoomBtn.addEventListener('click', () => {
+        this.createRoom();
+      });
+    } else {
+      console.warn('[Game] create-room-btn not found');
+    }
     
-    document.getElementById('join-room-btn').addEventListener('click', () => {
-      const code = document.getElementById('room-code-input').value.toUpperCase();
-      if (code.length === 6) {
-        this.joinRoom(code);
-      } else {
-        this.showToast('Please enter a valid room code', 'error');
-      }
-    });
+    const joinRoomBtn = document.getElementById('join-room-btn');
+    if (joinRoomBtn) {
+      joinRoomBtn.addEventListener('click', () => {
+        const code = document.getElementById('room-code-input').value.toUpperCase();
+        if (code.length === 6) {
+          this.joinRoom(code);
+        } else {
+          this.showToast('Please enter a valid room code', 'error');
+        }
+      });
+    } else {
+      console.warn('[Game] join-room-btn not found');
+    }
     
     // Lobby screen
-    document.getElementById('player-name-input').addEventListener('input', (e) => {
-      this.updatePlayerName(e.target.value);
-    });
+    const playerNameInput = document.getElementById('player-name-input');
+    if (playerNameInput) {
+      playerNameInput.addEventListener('input', (e) => {
+        this.updatePlayerName(e.target.value);
+      });
+    } else {
+      console.warn('[Game] player-name-input not found');
+    }
     
-    document.getElementById('start-game-btn').addEventListener('click', () => {
-      this.startGame();
-    });
+    const startGameBtn = document.getElementById('start-game-btn');
+    if (startGameBtn) {
+      startGameBtn.addEventListener('click', () => {
+        this.startGame();
+      });
+    } else {
+      console.warn('[Game] start-game-btn not found');
+    }
     
-    document.getElementById('leave-lobby-btn').addEventListener('click', () => {
-      this.leaveRoom();
-    });
+    const leaveLobbyBtn = document.getElementById('leave-lobby-btn');
+    if (leaveLobbyBtn) {
+      leaveLobbyBtn.addEventListener('click', () => {
+        this.leaveRoom();
+      });
+    } else {
+      console.warn('[Game] leave-lobby-btn not found');
+    }
     
-    document.getElementById('copy-code-btn').addEventListener('click', () => {
-      navigator.clipboard.writeText(this.roomCode);
-      this.showToast('Room code copied!', 'success');
-    });
+    const copyCodeBtn = document.getElementById('copy-code-btn');
+    if (copyCodeBtn) {
+      copyCodeBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(this.roomCode);
+        this.showToast('Room code copied!', 'success');
+      });
+    } else {
+      console.warn('[Game] copy-code-btn not found');
+    }
     
     // Game screen
-    document.getElementById('action-btn').addEventListener('click', () => {
-      this.handleAction();
-    });
+    const actionBtn = document.getElementById('action-btn');
+    if (actionBtn) {
+      actionBtn.addEventListener('click', () => {
+        this.handleAction();
+      });
+    } else {
+      console.warn('[Game] action-btn not found');
+    }
     
-    document.getElementById('emergency-btn').addEventListener('click', () => {
-      this.callEmergency();
-    });
+    const emergencyBtn = document.getElementById('emergency-btn');
+    if (emergencyBtn) {
+      emergencyBtn.addEventListener('click', () => {
+        this.callEmergency();
+      });
+    } else {
+      console.warn('[Game] emergency-btn not found');
+    }
     
-    document.getElementById('voice-btn').addEventListener('click', () => {
-      this.toggleVoiceModal();
-    });
+    const voiceBtn = document.getElementById('voice-btn');
+    if (voiceBtn) {
+      voiceBtn.addEventListener('click', () => {
+        this.toggleVoiceModal();
+      });
+    } else {
+      console.warn('[Game] voice-btn not found');
+    }
     
-    document.getElementById('mute-btn').addEventListener('click', () => {
-      if (!this.voiceChat) {
-        this.showToast('Voice chat not initialized', 'warning');
-        return;
-      }
-      this.toggleMute();
-    });
+    const muteBtn = document.getElementById('mute-btn');
+    if (muteBtn) {
+      muteBtn.addEventListener('click', () => {
+        if (!this.voiceChat) {
+          this.showToast('Voice chat not initialized', 'warning');
+          return;
+        }
+        this.toggleMute();
+      });
+    } else {
+      console.warn('[Game] mute-btn not found');
+    }
     
     // Meeting screen
-    document.getElementById('skip-vote-btn').addEventListener('click', () => {
-      this.skipVote();
-    });
+    const skipVoteBtn = document.getElementById('skip-vote-btn');
+    if (skipVoteBtn) {
+      skipVoteBtn.addEventListener('click', () => {
+        this.skipVote();
+      });
+    } else {
+      console.warn('[Game] skip-vote-btn not found');
+    }
     
-    document.getElementById('confirm-vote-btn').addEventListener('click', () => {
-      this.confirmVote();
-    });
+    const confirmVoteBtn = document.getElementById('confirm-vote-btn');
+    if (confirmVoteBtn) {
+      confirmVoteBtn.addEventListener('click', () => {
+        this.confirmVote();
+      });
+    } else {
+      console.warn('[Game] confirm-vote-btn not found');
+    }
     
     // Game over screen
-    document.getElementById('return-lobby-btn').addEventListener('click', () => {
-      this.returnToLobby();
-    });
+    const returnLobbyBtn = document.getElementById('return-lobby-btn');
+    if (returnLobbyBtn) {
+      returnLobbyBtn.addEventListener('click', () => {
+        this.returnToLobby();
+      });
+    } else {
+      console.warn('[Game] return-lobby-btn not found');
+    }
     
     // Settings modal
-    document.getElementById('settings-btn').addEventListener('click', () => {
-      this.showModal('settings-modal');
-    });
+    const settingsBtn = document.getElementById('settings-btn');
+    if (settingsBtn) {
+      settingsBtn.addEventListener('click', () => {
+        this.showModal('settings-modal');
+      });
+    } else {
+      console.warn('[Game] settings-btn not found');
+    }
     
-    document.getElementById('close-settings').addEventListener('click', () => {
-      this.hideModal('settings-modal');
-    });
+    const closeSettings = document.getElementById('close-settings');
+    if (closeSettings) {
+      closeSettings.addEventListener('click', () => {
+        this.hideModal('settings-modal');
+      });
+    } else {
+      console.warn('[Game] close-settings not found');
+    }
     
-    document.getElementById('save-settings').addEventListener('click', () => {
-      this.saveSettings();
-    });
+    const saveSettings = document.getElementById('save-settings');
+    if (saveSettings) {
+      saveSettings.addEventListener('click', () => {
+        this.saveSettings();
+      });
+    } else {
+      console.warn('[Game] save-settings not found');
+    }
     
     // Voice modal
-    document.getElementById('close-voice-modal').addEventListener('click', () => {
-      this.hideModal('voice-modal');
-    });
+    const closeVoiceModal = document.getElementById('close-voice-modal');
+    if (closeVoiceModal) {
+      closeVoiceModal.addEventListener('click', () => {
+        this.hideModal('voice-modal');
+      });
+    } else {
+      console.warn('[Game] close-voice-modal not found');
+    }
     
-    document.getElementById('toggle-mic-btn').addEventListener('click', () => {
-      this.toggleMute();
-    });
+    const toggleMicBtn = document.getElementById('toggle-mic-btn');
+    if (toggleMicBtn) {
+      toggleMicBtn.addEventListener('click', () => {
+        this.toggleMute();
+      });
+    } else {
+      console.warn('[Game] toggle-mic-btn not found');
+    }
     
     // Task modal
-    document.getElementById('close-task-modal').addEventListener('click', () => {
-      this.hideModal('task-modal');
-    });
+    const closeTaskModal = document.getElementById('close-task-modal');
+    if (closeTaskModal) {
+      closeTaskModal.addEventListener('click', () => {
+        this.hideModal('task-modal');
+      });
+    } else {
+      console.warn('[Game] close-task-modal not found');
+    }
+    
+    console.log('[Game] Event listener setup complete');
   }
   
   setupSocketListeners() {
@@ -465,7 +588,7 @@ class Game {
       this.showGameOverScreen(data);
     });
   }
-
+  
   setupJoystick() {
     // Check if joystick elements exist before initializing
     const zone = document.getElementById('joystick-zone');
@@ -1108,10 +1231,41 @@ class Game {
   }
   
   showScreen(screenName) {
-    Object.values(this.screens).forEach(screen => {
-      screen.classList.remove('active');
+    console.log(`[Game] Attempting to show screen: ${screenName}`);
+    
+    // Verify the screen name exists
+    if (!this.screens[screenName]) {
+      console.error(`[Game] Screen "${screenName}" not found in screens object`);
+      this.showToast(`Error: Screen "${screenName}" not found`, 'error');
+      return;
+    }
+    
+    const targetScreen = this.screens[screenName];
+    console.log(`[Game] Found target screen element:`, targetScreen);
+    
+    // Remove active class from all screens
+    Object.values(this.screens).forEach((screen, index) => {
+      if (screen) {
+        const wasActive = screen.classList.contains('active');
+        screen.classList.remove('active');
+        if (wasActive) {
+          console.log(`[Game] Removed active class from screen`);
+        }
+      } else {
+        console.warn(`[Game] Found null screen at index ${index}`);
+      }
     });
-    this.screens[screenName].classList.add('active');
+    
+    // Add active class to target screen
+    targetScreen.classList.add('active');
+    console.log(`[Game] Added active class to ${screenName}, classList:`, targetScreen.classList.toString());
+    
+    // Verify the change
+    if (targetScreen.classList.contains('active')) {
+      console.log(`[Game] SUCCESS: ${screenName} screen is now active`);
+    } else {
+      console.error(`[Game] FAILED: Could not add active class to ${screenName}`);
+    }
   }
   
   showModal(modalId) {
@@ -1317,7 +1471,7 @@ class Game {
     if (player && player.isAlive) {
       this.drawEnhancedVisionCone(player);
     }
-
+    
     ctx.restore();
     
     // Draw minimap in corner
