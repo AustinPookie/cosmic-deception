@@ -10,6 +10,9 @@ class Game {
     this.playerId = null;
     this.roomCode = null;
     
+    // Socket listener setup flag (prevent duplicate listeners)
+    this.socketListenersSetup = false;
+    
     // Game state
     this.state = {
       phase: 'lobby',
@@ -122,7 +125,7 @@ class Game {
       } else {
         console.error(`[Game] MISSING: ${screenId}`);
       }
-     });
+    });
 
     // CRITICAL: Check if CSS loaded by verifying computed styles
     console.log('[Game] Checking if CSS loaded properly...');
@@ -142,7 +145,8 @@ class Game {
       }
     }
 
-    console.log('[Game] Managing screen visibility...');    this.showScreen('splash');
+    console.log('[Game] Managing screen visibility...');
+    this.showScreen('splash');
     console.log('[Game] Screen visibility set to splash');
     
     // Setup canvas first (critical for rendering)
@@ -244,7 +248,11 @@ class Game {
         this.canvas.width / this.maps.skeld.width,
         this.canvas.height / this.maps.skeld.height
       );
-      console.log(`[Game] Canvas resized to ${this.canvas.width}x${this.canvas.height}, scale: ${this.scale.toFixed(2)}`);
+      // Only log on initial setup, not on every resize to reduce console noise
+      if (!this.canvasResized) {
+        console.log(`[Game] Canvas resized to ${this.canvas.width}x${this.canvas.height}, scale: ${this.scale.toFixed(2)}`);
+        this.canvasResized = true;
+      }
     };
     
     resizeCanvas();
@@ -460,6 +468,13 @@ class Game {
   }
   
   setupSocketListeners() {
+    // Prevent duplicate socket listener setup
+    if (this.socketListenersSetup) {
+      console.log('[Game] Socket listeners already set up, skipping...');
+      return;
+    }
+    this.socketListenersSetup = true;
+    
     // Join room
     this.socket.on('roomJoined', (response) => {
       if (response.success) {
@@ -838,7 +853,7 @@ class Game {
     
     // Check for nearby tasks
     for (const task of this.state.tasks) {
-      if (task.assignedTo === this.playerId && !task.completed) {
+      if (task && task.assignedTo === this.playerId && !task.completed) {
         const dx = player.x - task.x;
         const dy = player.y - task.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
@@ -894,6 +909,9 @@ class Game {
   }
   
   reportBody() {
+    // Immediate UI feedback
+    this.showToast('Reporting body...', 'warning');
+    
     this.socket.emit('reportBody', (response) => {
       if (!response.success) {
         this.showToast(response.message, 'error');
@@ -1023,8 +1041,19 @@ class Game {
     this.socket.emit('completeTask', taskId, (response) => {
       if (response.success) {
         this.showToast('Task completed!', 'success');
+        // Show task completion animation
+        this.showTaskCompleteAnimation();
       }
     });
+  }
+  
+  showTaskCompleteAnimation() {
+    // Create a temporary animation element
+    const anim = document.createElement('div');
+    anim.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-size:48px;pointer-events:none;z-index:9999;animation:1s fadeOut forwards;';
+    anim.textContent = '✅';
+    document.body.appendChild(anim);
+    setTimeout(() => anim.remove(), 1000);
   }
   
   showMeetingScreen(data) {
@@ -1127,7 +1156,7 @@ class Game {
       }
     }, 100);
   }
-
+  
   skipVote() {
     if (this.state.voted) return;
     
@@ -1190,6 +1219,12 @@ class Game {
   }
   
   returnToLobby() {
+    // Clear player list for fresh game state
+    this.state.players = [];
+    this.state.tasks = [];
+    this.state.imposters = [];
+    this.state.localPlayer = null;
+    
     this.showScreen('lobby');
     this.state.phase = 'lobby';
     
@@ -1203,7 +1238,7 @@ class Game {
     this.emergencyCooldown = 0;
     this.meetingEndTime = null;
     
-    // Reset player states
+    // Reset player states (for any remaining players)
     this.state.players.forEach(p => {
       p.isAlive = true;
       p.role = 'crewmate';
@@ -1241,6 +1276,8 @@ class Game {
   updateTaskProgress(completed, total) {
     const fill = document.getElementById('task-progress-fill');
     const text = document.getElementById('task-progress-text');
+    
+    if (!fill || !text) return;
     
     const percentage = total > 0 ? (completed / total) * 100 : 0;
     fill.style.width = `${percentage}%`;
@@ -1286,15 +1323,28 @@ class Game {
   }
   
   showModal(modalId) {
-    document.getElementById(modalId).classList.add('active');
+    const modal = document.getElementById(modalId);
+    if (modal) {
+      modal.classList.add('active');
+    }
   }
   
   hideModal(modalId) {
-    document.getElementById(modalId).classList.remove('active');
+    const modal = document.getElementById(modalId);
+    if (modal) {
+      modal.classList.remove('active');
+    }
   }
   
   showToast(message, type = 'success') {
     const container = document.getElementById('toast-container');
+    
+    // Check if toast container exists
+    if (!container) {
+      console.warn(`[Game] Toast container not found, logging message: ${message}`);
+      return;
+    }
+    
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.textContent = message;
@@ -1380,6 +1430,9 @@ class Game {
     const player = this.state.localPlayer;
     const actionBtn = document.getElementById('action-btn');
     
+    // Null check for action button
+    if (!actionBtn) return;
+    
     if (!player || !player.isAlive) {
       actionBtn.classList.remove('active');
       return;
@@ -1389,7 +1442,7 @@ class Game {
     
     // Check for nearby tasks
     for (const task of this.state.tasks) {
-      if (task.assignedTo === this.playerId && !task.completed) {
+      if (task && task.assignedTo === this.playerId && !task.completed) {
         const dx = player.x - task.x;
         const dy = player.y - task.y;
         if (Math.sqrt(dx * dx + dy * dy) < 60) {
@@ -1470,9 +1523,9 @@ class Game {
       this.drawEnhancedVent(vent);
     });
     
-    // Draw tasks
+    // Draw tasks (with null check for each task)
     this.state.tasks.forEach(task => {
-      if (!task.completed) {
+      if (task && !task.completed) {
         this.drawTaskWithDetails(task);
       }
     });
@@ -1508,10 +1561,9 @@ class Game {
     const minimapY = canvas.height - minimapSize - 15;
     const scale = minimapSize / Math.max(map.width, map.height);
     
-    // Minimap background
+    // Minimap background - use polyfill for roundRect
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.beginPath();
-    ctx.roundRect(minimapX - 5, minimapY - 5, minimapSize + 10, minimapSize + 10, 8);
+    this.drawRoundedRect(ctx, minimapX - 5, minimapY - 5, minimapSize + 10, minimapSize + 10, 8);
     ctx.fill();
     
     // Minimap border
@@ -1539,6 +1591,21 @@ class Game {
       canvas.width * scale,
       canvas.height * scale
     );
+  }
+  
+  // Helper function for cross-browser rounded rectangles
+  drawRoundedRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
   }
   
   drawFloorPattern() {
@@ -1814,11 +1881,10 @@ class Game {
     ctx.ellipse(player.x + 8, player.y + 18, 6, 4, 0, 0, Math.PI * 2);
     ctx.fill();
     
-    // Draw name tag background
+    // Draw name tag background - use polyfill for roundRect
     const nameWidth = ctx.measureText(player.name).width + 20;
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.beginPath();
-    ctx.roundRect(player.x - nameWidth / 2, player.y - 48, nameWidth, 18, 4);
+    this.drawRoundedRect(ctx, player.x - nameWidth / 2, player.y - 48, nameWidth, 18, 4);
     ctx.fill();
     
     // Draw name
@@ -1913,8 +1979,7 @@ class Game {
     
     // Name tag (faded)
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.beginPath();
-    ctx.roundRect(player.x - 35, player.y - 55, 70, 16, 4);
+    this.drawRoundedRect(ctx, player.x - 35, player.y - 55, 70, 16, 4);
     ctx.fill();
     
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
