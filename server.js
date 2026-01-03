@@ -1,761 +1,705 @@
-const express = require('express');
+// Cosmic Deception - Server Entry Point
+// Multiplayer game server with real-time WebSocket communication
+
+// Security Headers Middleware
+const helmet = require('helmet');
+const cors = require('cors');
+
+// Game Configuration Constants
+// These constants define core game settings that may need adjustment
+const MAP_WIDTH = 2000;
+const MAP_HEIGHT = 2000;
+const MAX_PLAYERS = 16;
+const GAME_TICK_RATE = 60; // Hz
+
 const http = require('http');
+const express = require('express');
 const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+    // WebSocket configuration for optimal real-time performance
+    pingInterval: 25000,
+    pingTimeout: 20000,
+    transports: ['websocket', 'polling']
 });
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Game state storage
-const rooms = new Map();
-const playerSockets = new Map();
-
-// Map configurations
-const maps = {
-  'skeld': {
-    name: 'The Skeld',
-    width: 1600,
-    height: 1200,
-    spawnPoints: [
-      { x: 800, y: 600 },  // Cafeteria
-      { x: 400, y: 300 },  // Admin
-      { x: 1200, y: 300 }, // Navigation
-      { x: 400, y: 900 },  // Shields
-      { x: 1200, y: 900 }  // Storage
-    ],
-    walls: [],
-    tasks: [
-      { id: 'fix_wires', name: 'Fix Wires', x: 300, y: 200, type: 'short' },
-      { id: 'fuel_engine', name: 'Fuel Engine', x: 1000, y: 800, type: 'long' },
-      { id: 'clean_filter', name: 'Clean Filter', x: 600, y: 400, type: 'medium' },
-      { id: 'align_output', name: 'Align Output', x: 1300, y: 200, type: 'short' },
-      { id: 'divert_power', name: 'Divert Power', x: 500, y: 1000, type: 'medium' }
-    ],
-    vents: [
-      { x: 400, y: 400 },
-      { x: 1200, y: 400 },
-      { x: 400, y: 800 },
-      { x: 1200, y: 800 }
-    ]
-  }
-};
-
-// Player colors
-const PLAYER_COLORS = [
-  '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
-  '#FFA500', '#800080', '#008000', '#000080', '#FFC0CB', '#A52A2A',
-  '#808080', '#000000', '#4B0082', '#40E0D0', '#FA8072', '#EE82EE',
-  '#FFD700', '#ADFF2F'
-];
-
-// Game phases
-const PHASE = {
-  LOBBY: 'lobby',
-  TASKS: 'tasks',
-  MEETING: 'meeting',
-  GAME_OVER: 'game_over'
-};
-
-// Helper functions
-function generateRoomCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
-}
-
-function assignRoles(numPlayers) {
-  const numImposters = numPlayers <= 5 ? 1 : numPlayers <= 8 ? 2 : 3;
-  const roles = Array(numPlayers).fill('crewmate');
-  
-  for (let i = 0; i < numImposters; i++) {
-    roles[i] = 'imposter';
-  }
-  
-  // Shuffle roles
-  for (let i = roles.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [roles[i], roles[j]] = [roles[j], roles[i]];
-  }
-  
-  return roles;
-}
-
-function createRoom(hostSocketId, settings = {}) {
-  const roomCode = generateRoomCode();
-  const room = {
-    code: roomCode,
-    host: hostSocketId,
-    players: new Map(),
-    gameState: {
-      phase: PHASE.LOBBY,
-      imposters: [],
-      crewmates: [],
-      tasks: [],
-      meetingActive: false,
-      votes: {},
-      bodyReported: false,
-      emergencyCalled: false,
-      taskProgress: 0,
-      totalTasks: 0,
-      map: settings.map || 'skeld'
+// Apply security headers including CSP
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "blob:"],
+            connectSrc: ["'self'", "ws:", "wss:"],
+            fontSrc: ["'self'"],
+            objectSrc: ["'none'"],
+            mediaSrc: ["'self'"],
+            frameSrc: ["'none'"]
+        }
     },
-    settings: {
-      ...settings,
-      maxPlayers: settings.maxPlayers || 10,
-      killCooldown: settings.killCooldown || 30,
-      taskBar: settings.taskBar || 'always',
-      emergencyCooldown: settings.emergencyCooldown || 15,
-      discussionTime: settings.discussionTime || 30,
-      votingTime: settings.votingTime || 30
+    crossOriginEmbedderPolicy: false
+}));
+
+// Enable CORS for development
+app.use(cors({
+    origin: process.env.NODE_ENV === 'production' ? false : '*',
+    methods: ['GET', 'POST']
+}));
+
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, 'public'), {
+    maxAge: '1d',
+    etag: true
+}));
+
+// Serve index.html for all non-API routes (SPA support)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Game State Management
+const gameState = {
+    players: new Map(),
+    ships: new Map(),
+    asteroids: [],
+    projectiles: [],
+    pickups: [],
+    teams: {
+        red: { score: 0, players: [] },
+        blue: { score: 0, players: [] },
+        neutral: { score: 0, players: [] }
+    },
+    gamePhase: 'lobby', // lobby, waiting, playing, ended
+    roundStartTime: null,
+    lastUpdate: Date.now()
+};
+
+// Initialize Asteroid Field
+function initializeAsteroids(count = 50) {
+    gameState.asteroids = [];
+    for (let i = 0; i < count; i++) {
+        gameState.asteroids.push({
+            id: i,
+            x: Math.random() * MAP_WIDTH,
+            y: Math.random() * MAP_HEIGHT,
+            radius: 20 + Math.random() * 40,
+            rotation: Math.random() * Math.PI * 2,
+            rotationSpeed: (Math.random() - 0.5) * 0.02,
+            vertices: generateAsteroidVertices()
+        });
     }
-  };
-  
-  rooms.set(roomCode, room);
-  return room;
 }
 
-function resetGame(roomCode) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
-  
-  const mapConfig = maps[room.gameState.map];
-  const spawnIndex = Math.floor(Math.random() * mapConfig.spawnPoints.length);
-  
-  // Assign roles
-  const roles = assignRoles(room.players.size);
-  const playerArray = Array.from(room.players.values());
-  
-  room.gameState.imposters = [];
-  room.gameState.crewmates = [];
-  room.gameState.tasks = [];
-  
-  playerArray.forEach((player, index) => {
-    player.role = roles[index];
-    player.isAlive = true;
-    player.x = mapConfig.spawnPoints[index % mapConfig.spawnPoints.length].x;
-    player.y = mapConfig.spawnPoints[index % mapConfig.spawnPoints.length].y;
-    player.completedTasks = 0;
-    player.votedFor = null;
-    
-    if (player.role === 'imposter') {
-      room.gameState.imposters.push(player.id);
-    } else {
-      room.gameState.crewmates.push(player.id);
-      // Assign random tasks to crewmates
-      const numTasks = 3 + Math.floor(Math.random() * 3); // 3-5 tasks per crewmate
-      for (let i = 0; i < numTasks; i++) {
-        const task = { ...mapConfig.tasks[Math.floor(Math.random() * mapConfig.tasks.length)] };
-        task.assignedTo = player.id;
-        task.completed = false;
-        room.gameState.tasks.push(task);
-      }
+// Generate random asteroid shape
+function generateAsteroidVertices() {
+    const vertices = [];
+    const numVertices = 8 + Math.floor(Math.random() * 5);
+    for (let i = 0; i < numVertices; i++) {
+        const angle = (i / numVertices) * Math.PI * 2;
+        const radius = 0.7 + Math.random() * 0.3;
+        vertices.push({ angle, radius });
     }
-  });
-  
-  // FIX: Properly count crewmate tasks by looking up player roles
-  room.gameState.totalTasks = room.gameState.tasks.filter(t => {
-    const player = room.players.get(t.assignedTo);
-    return player && player.role !== 'imposter';
-  }).length;
-
-  room.gameState.phase = PHASE.TASKS;
-  room.gameState.meetingActive = false;
-  room.gameState.votes = {};
-  room.gameState.bodyReported = false;
-  room.gameState.emergencyCalled = false;
-  
-  // Reset impostor kill cooldowns
-  room.gameState.imposterKillCooldowns = {};
-  room.gameState.imposters.forEach(id => {
-    room.gameState.imposterKillCooldowns[id] = 0;
-  });
-  
-  return room;
+    return vertices;
 }
 
-// Socket.io connection handling
-io.on('connection', (socket) => {
-  console.log(`Player connected: ${socket.id}`);
-  
-  // Create room
-  socket.on('createRoom', (settings, callback) => {
-    const room = createRoom(socket.id, settings);
-    socket.join(room.code);
-    
-    if (typeof callback === 'function') {
-      callback({ 
-        success: true, 
-        roomCode: room.code,
-        settings: room.settings
-      });
-    }
-    
-    // Also emit the room code to all sockets in the room
-    socket.to(room.code).emit('roomCreated', { roomCode: room.code });
-    
-    console.log(`Room created: ${room.code}`);
-  });
-  
-  // Join room
-  socket.on('joinRoom', ({ roomCode, playerName, color }, callback) => {
-    const room = rooms.get(roomCode.toUpperCase());
-    
-    if (!room) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Room not found' });
-      }
-      return;
-    }
-    
-    if (room.players.size >= room.settings.maxPlayers) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Room is full' });
-      }
-      return;
-    }
-    
-    if (room.gameState.phase !== PHASE.LOBBY) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Game already in progress' });
-      }
-      return;
-    }
-    
-    const playerId = uuidv4();
+// Player Management
+function createPlayer(id, data) {
     const player = {
-      id: playerId,
-      socketId: socket.id,
-      name: playerName || `Player ${room.players.size + 1}`,
-      color: color || PLAYER_COLORS[room.players.size % PLAYER_COLORS.length],
-      role: 'crewmate',
-      isAlive: true,
-      x: 800 + (Math.random() - 0.5) * 200,
-      y: 600 + (Math.random() - 0.5) * 200,
-      completedTasks: 0,
-      votedFor: null,
-      peerId: null // For WebRTC voice
+        id,
+        name: sanitizePlayerName(data.name) || `Player${id.slice(0, 4)}`,
+        color: validateColor(data.color) || '#00ff00',
+        shipId: null,
+        team: 'neutral',
+        score: 0,
+        kills: 0,
+        deaths: 0,
+        connected: true,
+        lastHeartbeat: Date.now()
     };
     
-    room.players.set(playerId, player);
-    playerSockets.set(socket.id, { roomCode: room.code, playerId });
-    socket.join(room.code);
-    
-    // Notify others
-    socket.to(room.code).emit('playerJoined', player);
-    
-    // Send current players to new player
-    const playersList = Array.from(room.players.values());
-    socket.emit('roomJoined', {
-      success: true,
-      playerId,
-      roomCode: room.code,
-      players: playersList,
-      host: room.host,
-      settings: room.settings,
-      map: room.gameState.map
-    });
-    
-    if (typeof callback === 'function') {
-      callback({ success: true, playerId });
-    }
-    
-    console.log(`Player ${player.name} joined room ${room.code}`);
-  });
-  
-  // Update player info (name, color)
-  socket.on('updatePlayer', (updates, callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Not in a room' });
-      }
-      return;
-    }
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Player not found' });
-      }
-      return;
-    }
-    
-    Object.assign(player, updates);
-    
-    // Notify others
-    socket.to(data.roomCode).emit('playerUpdated', { playerId: data.playerId, updates });
-    
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // Voice: Set peer ID
-  socket.on('setPeerId', (peerId) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
+    gameState.players.set(id, player);
+    return player;
+}
+
+function removePlayer(id) {
+    const player = gameState.players.get(id);
     if (player) {
-      player.peerId = peerId;
-      io.to(data.roomCode).emit('peerIdUpdated', { playerId: data.playerId, peerId });
+        // Remove from team
+        if (player.team !== 'neutral') {
+            const teamIndex = gameState.teams[player.team].players.indexOf(id);
+            if (teamIndex > -1) gameState.teams[player.team].players.splice(teamIndex, 1);
+        }
+        
+        // Remove player's ship
+        if (player.shipId && gameState.ships.has(player.shipId)) {
+            gameState.ships.delete(player.shipId);
+        }
+        
+        gameState.players.delete(id);
     }
-  });
-  
-  // Get voice peers in room
-  socket.on('getVoicePeers', (callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Not in a room' });
-      }
-      return;
+}
+
+// Input Validation Functions
+function sanitizePlayerName(name) {
+    if (!name || typeof name !== 'string') return null;
+    // Remove potentially dangerous characters and limit length
+    return name.replace(/[<>"'&]/g, '').substring(0, 20).trim();
+}
+
+function validateColor(color) {
+    if (!color || typeof color !== 'string') return null;
+    // Validate hex color format
+    const colorRegex = /^#[0-9A-Fa-f]{6}$/;
+    return colorRegex.test(color) ? color : null;
+}
+
+// Ship Management
+function createShip(playerId, team) {
+    const shipId = `ship_${playerId}`;
+    const colors = {
+        red: '#ff4444',
+        blue: '#4444ff',
+        neutral: '#aaaaaa'
+    };
+    
+    const ship = {
+        id: shipId,
+        playerId,
+        team,
+        x: Math.random() * MAP_WIDTH,
+        y: Math.random() * MAP_HEIGHT,
+        rotation: Math.random() * Math.PI * 2,
+        velocity: { x: 0, y: 0 },
+        angularVelocity: 0,
+        thrust: 0,
+        color: colors[team] || colors.neutral,
+        health: 100,
+        maxHealth: 100,
+        shield: 50,
+        maxShield: 50,
+        energy: 100,
+        maxEnergy: 100,
+        weapons: {
+            primary: { cooldown: 0, maxCooldown: 10 },
+            secondary: { cooldown: 0, maxCooldown: 120 },
+            special: { cooldown: 0, maxCooldown: 600 }
+        },
+        powerups: [],
+        flags: [],
+        state: 'idle' // idle, moving, combat, destroyed
+    };
+    
+    gameState.ships.set(shipId, ship);
+    
+    const player = gameState.players.get(playerId);
+    if (player) {
+        player.shipId = shipId;
     }
     
-    const room = rooms.get(data.roomCode);
-    const peers = [];
+    return ship;
+}
+
+// Socket Connection Handling
+io.on('connection', (socket) => {
+    console.log(`Client connected: ${socket.id}`);
     
-    room.players.forEach((player) => {
-      if (player.id !== data.playerId && player.peerId && player.isAlive) {
-        peers.push({
-          playerId: player.id,
-          peerId: player.peerId,
-          name: player.name
-        });
-      }
+    // Create new player
+    const player = createPlayer(socket.id, {
+        name: socket.handshake.query.name,
+        color: socket.handshake.query.color
     });
     
-    if (typeof callback === 'function') {
-      callback({ success: true, peers });
-    }
-  });
-  
-  // Start game
-  socket.on('startGame', (callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Not in a room' });
-      }
-      return;
-    }
-    
-    const room = rooms.get(data.roomCode);
-    
-    if (room.host !== socket.id) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Only host can start game' });
-      }
-      return;
-    }
-    
-    if (room.players.size < 4) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Need at least 4 players' });
-      }
-      return;
-    }
-    
-    resetGame(data.roomCode);
-    
-    // Notify all players
-    io.to(data.roomCode).emit('gameStarted', {
-      players: Array.from(room.players.values()),
-      tasks: room.gameState.tasks,
-      imposters: room.gameState.imposters,
-      totalTasks: room.gameState.totalTasks
+    // Send initial game state
+    socket.emit('init', {
+        playerId: socket.id,
+        gameState: serializeGameState(),
+        config: {
+            mapWidth: MAP_WIDTH,
+            mapHeight: MAP_HEIGHT,
+            maxPlayers: MAX_PLAYERS
+        }
     });
     
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-    
-    console.log(`Game started in room ${data.roomCode}`);
-  });
-  
-  // Player movement
-  socket.on('playerMove', (movement) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || !player.isAlive || room.gameState.phase !== PHASE.TASKS) return;
-    
-    // Update position
-    player.x = Math.max(0, Math.min(maps[room.gameState.map].width, movement.x));
-    player.y = Math.max(0, Math.min(maps[room.gameState.map].height, movement.y));
-    
-    // Broadcast to others
-    socket.to(data.roomCode).emit('playerMoved', {
-      playerId: data.playerId,
-      x: player.x,
-      y: player.y
-    });
-  });
-  
-  // Report body
-  socket.on('reportBody', (callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || !player.isAlive || room.gameState.bodyReported) {
-      if (typeof callback === 'function') callback({ success: false, message: 'Cannot report body' });
-      return;
-    }
-    
-    room.gameState.bodyReported = true;
-    room.gameState.meetingActive = true;
-    room.gameState.phase = PHASE.MEETING;
-    
-    // Reset votes
-    room.gameState.votes = {};
-    room.players.forEach((p) => {
-      p.votedFor = null;
+    // Handle player input
+    socket.on('input', (data) => {
+        handlePlayerInput(socket.id, data);
     });
     
-    io.to(data.roomCode).emit('meetingCalled', {
-      type: 'body',
-      reportedBy: data.playerId,
-      discussionTime: room.settings.discussionTime,
-      votingTime: room.settings.votingTime
+    // Handle chat messages
+    socket.on('chat', (message) => {
+        handleChatMessage(socket.id, message);
     });
     
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // Emergency meeting
-  socket.on('emergencyMeeting', (callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || !player.isAlive || room.gameState.emergencyCalled) {
-      if (typeof callback === 'function') callback({ success: false, message: 'Emergency cooldown active' });
-      return;
-    }
-    
-    room.gameState.emergencyCalled = true;
-    room.gameState.meetingActive = true;
-    room.gameState.phase = PHASE.MEETING;
-    
-    // Reset votes
-    room.gameState.votes = {};
-    room.players.forEach((p) => {
-      p.votedFor = null;
+    // Handle team selection
+    socket.on('teamSelect', (team) => {
+        handleTeamSelection(socket.id, team);
     });
     
-    io.to(data.roomCode).emit('meetingCalled', {
-      type: 'emergency',
-      calledBy: data.playerId,
-      discussionTime: room.settings.discussionTime,
-      votingTime: room.settings.votingTime
+    // Handle ship controls
+    socket.on('shipControl', (data) => {
+        handleShipControl(socket.id, data);
     });
     
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // Vote
-  socket.on('vote', (targetId, callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || !player.isAlive || !room.gameState.meetingActive) return;
-    
-    player.votedFor = targetId;
-    room.gameState.votes[player.id] = targetId;
-    
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // Skip vote
-  socket.on('skipVote', (callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || !player.isAlive || !room.gameState.meetingActive) return;
-    
-    player.votedFor = 'skip';
-    room.gameState.votes[player.id] = 'skip';
-    
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // Complete task
-  socket.on('completeTask', (taskId, callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || !player.isAlive || player.role === 'imposter') return;
-    
-    const task = room.gameState.tasks.find(t => t.id === taskId && t.assignedTo === player.id);
-    if (task && !task.completed) {
-      task.completed = true;
-      player.completedTasks++;
-      
-      const completedTasks = room.gameState.tasks.filter(t => t.completed && t.assignedTo !== 'imposter').length;
-      room.gameState.taskProgress = completedTasks;
-      
-      io.to(data.roomCode).emit('taskCompleted', {
-        playerId: data.playerId,
-        taskId,
-        progress: room.gameState.taskProgress,
-        totalTasks: room.gameState.totalTasks
-      });
-      
-      // Check win condition
-      if (room.gameState.taskProgress >= room.gameState.totalTasks) {
-        room.gameState.phase = PHASE.GAME_OVER;
-        io.to(data.roomCode).emit('gameOver', {
-          winners: 'crewmates',
-          reason: 'All tasks completed'
-        });
-      }
-    }
-    
-    if (typeof callback === 'function') {
-      callback({ success: !!task });
-    }
-  });
-  
-  // Imposter kill
-  socket.on('killPlayer', (targetId, callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    const target = room.players.get(targetId);
-    
-    if (!player || player.role !== 'imposter' || !player.isAlive) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Cannot kill' });
-      }
-      return;
-    }
-    
-    // Check kill cooldown
-    const cooldown = room.gameState.imposterKillCooldowns[player.id] || 0;
-    if (Date.now() / 1000 - cooldown < room.settings.killCooldown) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Kill cooldown active' });
-      }
-      return;
-    }
-    
-    // Check distance (simplified - should check actual distance on server)
-    const dx = player.x - target.x;
-    const dy = player.y - target.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    if (distance > 150) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Target too far' });
-      }
-      return;
-    }
-    
-    // Kill the target
-    target.isAlive = false;
-    room.gameState.imposterKillCooldowns[player.id] = Date.now() / 1000;
-    
-    io.to(data.roomCode).emit('playerKilled', {
-      playerId: targetId,
-      killerId: data.playerId
+    // Handle weapon firing
+    socket.on('fire', (weaponType) => {
+        handleFireWeapon(socket.id, weaponType);
     });
     
-    // Check if only imposters remain
-    const aliveImposters = room.gameState.imposters.filter(id => {
-      const p = room.players.get(id);
-      return p && p.isAlive;
+    // Handle ability activation
+    socket.on('ability', (abilityIndex) => {
+        handleAbilityActivation(socket.id, abilityIndex);
     });
     
-    const aliveCrewmates = room.gameState.crewmates.filter(id => {
-      const p = room.players.get(id);
-      return p && p.isAlive;
+    // Handle disconnection
+    socket.on('disconnect', () => {
+        console.log(`Client disconnected: ${socket.id}`);
+        removePlayer(socket.id);
+        broadcastPlayerList();
     });
     
-    if (aliveImposters.length >= aliveCrewmates.length) {
-      room.gameState.phase = PHASE.GAME_OVER;
-      io.to(data.roomCode).emit('gameOver', {
-        winners: 'imposters',
-        reason: 'Imposters outnumber crewmates'
-      });
-    }
-    
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // Sabotage
-  socket.on('sabotage', (type, callback) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    const player = room.players.get(data.playerId);
-    
-    if (!player || player.role !== 'imposter' || !player.isAlive) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Cannot sabotage' });
-      }
-      return;
-    }
-    
-    io.to(data.roomCode).emit('sabotageStarted', {
-      type,
-      imposterId: data.playerId
+    // Heartbeat for connection health
+    socket.on('heartbeat', () => {
+        const player = gameState.players.get(socket.id);
+        if (player) {
+            player.lastHeartbeat = Date.now();
+        }
     });
     
-    if (typeof callback === 'function') {
-      callback({ success: true });
-    }
-  });
-  
-  // End meeting
-  socket.on('endMeeting', (results) => {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    
-    room.gameState.meetingActive = false;
-    room.gameState.phase = PHASE.TASKS;
-    room.gameState.bodyReported = false;
-    room.gameState.emergencyCalled = false;
-    
-    // Reset all votes
-    room.gameState.votes = {};
-    room.players.forEach((p) => {
-      p.votedFor = null;
-    });
-    
-    // Respawn all alive players at random spawn points
-    const mapConfig = maps[room.gameState.map];
-    room.players.forEach((player) => {
-      if (player.isAlive) {
-        const spawnPoint = mapConfig.spawnPoints[Math.floor(Math.random() * mapConfig.spawnPoints.length)];
-        player.x = spawnPoint.x + (Math.random() - 0.5) * 100;
-        player.y = spawnPoint.y + (Math.random() - 0.5) * 100;
-      }
-    });
-    
-    io.to(data.roomCode).emit('meetingEnded', results);
-  });
-  
-  // Leave room
-  socket.on('leaveRoom', () => {
-    handleDisconnect(socket);
-  });
-  
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log(`Player disconnected: ${socket.id}`);
-    handleDisconnect(socket);
-  });
-  
-  function handleDisconnect(socket) {
-    const data = playerSockets.get(socket.id);
-    if (!data) return;
-    
-    const room = rooms.get(data.roomCode);
-    if (!room) return;
-    
-    const player = room.players.get(data.playerId);
-    
-    // Remove player
-    room.players.delete(data.playerId);
-    playerSockets.delete(socket.id);
-    socket.leave(data.roomCode);
-    
-    // Notify others
-    socket.to(data.roomCode).emit('playerLeft', { playerId: data.playerId });
-    
-    // If host left, assign new host or dissolve room
-    if (room.host === socket.id) {
-      if (room.players.size > 0) {
-        const newHost = room.players.values().next().value;
-        room.host = newHost.socketId;
-        io.to(data.roomCode).emit('hostChanged', { newHostId: newHost.id });
-      } else {
-        rooms.delete(data.roomCode);
-        console.log(`Room ${data.roomCode} dissolved`);
-      }
-    }
-    
-    // If game in progress and player was alive, handle appropriately
-    if (room.gameState.phase !== PHASE.LOBBY && player && player.isAlive) {
-      if (player.role === 'imposter') {
-        room.gameState.imposters = room.gameState.imposters.filter(id => id !== data.playerId);
-      } else {
-        room.gameState.crewmates = room.gameState.crewmates.filter(id => id !== data.playerId);
-      }
-      
-      // Check win conditions
-      const aliveImposters = room.gameState.imposters.filter(id => {
-        const p = room.players.get(id);
-        return p && p.isAlive;
-      }).length;
-      
-      const aliveCrewmates = room.gameState.crewmates.filter(id => {
-        const p = room.players.get(id);
-        return p && p.isAlive;
-      }).length;
-      
-      if (aliveImposters === 0) {
-        room.gameState.phase = PHASE.GAME_OVER;
-        io.to(data.roomCode).emit('gameOver', { winners: 'crewmates', reason: 'All imposters eliminated' });
-      } else if (aliveImposters >= aliveCrewmates) {
-        room.gameState.phase = PHASE.GAME_OVER;
-        io.to(data.roomCode).emit('gameOver', { winners: 'imposters', reason: 'Imposters outnumber crewmates' });
-      }
-    }
-  }
+    // Send current player list
+    broadcastPlayerList();
 });
 
-// Serve index.html
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+// Input Handlers
+function handlePlayerInput(playerId, data) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+    
+    const ship = gameState.ships.get(player.shipId);
+    if (!ship) return;
+    
+    // Update ship control states
+    if (data.inputs) {
+        ship.controls = {
+            thrust: Boolean(data.inputs.thrust),
+            brake: Boolean(data.inputs.brake),
+            rotateLeft: Boolean(data.inputs.rotateLeft),
+            rotateRight: Boolean(data.inputs.rotateRight),
+            firePrimary: Boolean(data.inputs.firePrimary),
+            fireSecondary: Boolean(data.inputs.fireSecondary),
+            activateAbility: data.inputs.activateAbility !== undefined ? Number(data.inputs.activateAbility) : -1
+        };
+    }
+}
+
+function handleChatMessage(playerId, message) {
+    const player = gameState.players.get(playerId);
+    if (!player || !message) return;
+    
+    // Sanitize and limit message length
+    const sanitizedMessage = String(message)
+        .replace(/[<>"'&]/g, '')
+        .substring(0, 200);
+    
+    if (sanitizedMessage.trim().length > 0) {
+        io.emit('chat', {
+            sender: player.name,
+            message: sanitizedMessage,
+            teamOnly: player.team !== 'neutral'
+        });
+    }
+}
+
+function handleTeamSelection(playerId, team) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+    
+    const validTeams = ['red', 'blue', 'neutral'];
+    const selectedTeam = validTeams.includes(team) ? team : 'neutral';
+    
+    // Remove from current team
+    if (player.team !== 'neutral') {
+        const currentTeamIndex = gameState.teams[player.team].players.indexOf(playerId);
+        if (currentTeamIndex > -1) {
+            gameState.teams[player.team].players.splice(currentTeamIndex, 1);
+        }
+    }
+    
+    // Add to new team
+    player.team = selectedTeam;
+    gameState.teams[selectedTeam].players.push(playerId);
+    
+    // Create or update ship
+    if (selectedTeam !== 'neutral') {
+        if (!player.shipId || !gameState.ships.has(player.shipId)) {
+            createShip(playerId, selectedTeam);
+        } else {
+            const ship = gameState.ships.get(player.shipId);
+            if (ship) {
+                ship.team = selectedTeam;
+            }
+        }
+    }
+    
+    broadcastTeamUpdates();
+}
+
+function handleShipControl(playerId, data) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+    
+    const ship = gameState.ships.get(player.shipId);
+    if (!ship) return;
+    
+    // Apply control inputs with validation
+    if (typeof data.thrust === 'number' && data.thrust >= 0 && data.thrust <= 1) {
+        ship.thrust = data.thrust;
+    }
+    
+    if (typeof data.rotation === 'number' && isFinite(data.rotation)) {
+        ship.rotation = data.rotation;
+    }
+}
+
+function handleFireWeapon(playerId, weaponType) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+    
+    const ship = gameState.ships.get(player.shipId);
+    if (!ship) return;
+    
+    const weapons = ['primary', 'secondary', 'special'];
+    const selectedWeapon = weapons.includes(weaponType) ? weaponType : 'primary';
+    const weapon = ship.weapons[selectedWeapon];
+    
+    if (weapon.cooldown <= 0) {
+        // Fire weapon logic here
+        weapon.cooldown = weapon.maxCooldown;
+        
+        // Create projectile
+        const projectile = {
+            id: `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            shipId: ship.id,
+            team: ship.team,
+            x: ship.x + Math.cos(ship.rotation) * 20,
+            y: ship.y + Math.sin(ship.rotation) * 20,
+            velocity: {
+                x: Math.cos(ship.rotation) * 10,
+                y: Math.sin(ship.rotation) * 10
+            },
+            damage: selectedWeapon === 'primary' ? 10 : selectedWeapon === 'secondary' ? 30 : 50,
+            lifetime: 100
+        };
+        
+        gameState.projectiles.push(projectile);
+    }
+}
+
+function handleAbilityActivation(playerId, abilityIndex) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+    
+    const ship = gameState.ships.get(player.shipId);
+    if (!ship) return;
+    
+    // Ability activation logic
+    const abilities = ['shield', 'boost', 'repair'];
+    if (abilityIndex >= 0 && abilityIndex < abilities.length) {
+        const ability = abilities[abilityIndex];
+        const energyCost = { shield: 30, boost: 20, repair: 40 };
+        
+        if (ship.energy >= energyCost[ability]) {
+            ship.energy -= energyCost[ability];
+            
+            switch (ability) {
+                case 'shield':
+                    ship.shield = Math.min(ship.maxShield, ship.shield + 30);
+                    break;
+                case 'boost':
+                    ship.thrust = Math.min(1, ship.thrust + 0.5);
+                    break;
+                case 'repair':
+                    ship.health = Math.min(ship.maxHealth, ship.health + 20);
+                    break;
+            }
+        }
+    }
+}
+
+// Broadcast Functions
+function broadcastPlayerList() {
+    const playerList = Array.from(gameState.players.values()).map(p => ({
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        team: p.team,
+        score: p.score
+    }));
+    
+    io.emit('playerList', playerList);
+}
+
+function broadcastTeamUpdates() {
+    const teams = {
+        red: {
+            score: gameState.teams.red.score,
+            playerCount: gameState.teams.red.players.length
+        },
+        blue: {
+            score: gameState.teams.blue.score,
+            playerCount: gameState.teams.blue.players.length
+        }
+    };
+    
+    io.emit('teamUpdate', teams);
+}
+
+// Game Loop
+function gameLoop() {
+    const now = Date.now();
+    const deltaTime = (now - gameState.lastUpdate) / 1000;
+    gameState.lastUpdate = now;
+    
+    // Update all ships
+    gameState.ships.forEach((ship, id) => {
+        updateShip(ship, deltaTime);
+    });
+    
+    // Update all projectiles
+    updateProjectiles();
+    
+    // Update asteroids
+    gameState.asteroids.forEach(asteroid => {
+        asteroid.rotation += asteroid.rotationSpeed;
+    });
+    
+    // Check for disconnected players (30 second timeout)
+    gameState.players.forEach((player, id) => {
+        if (now - player.lastHeartbeat > 30000) {
+            removePlayer(id);
+        }
+    });
+    
+    // Broadcast game state
+    io.emit('gameState', serializeGameState());
+    
+    // Update player list periodically
+    if (Math.random() < 0.1) {
+        broadcastPlayerList();
+    }
+}
+
+// Ship Update Logic
+function updateShip(ship, deltaTime) {
+    // Rotation
+    if (ship.controls) {
+        if (ship.controls.rotateLeft) {
+            ship.angularVelocity -= 0.1;
+        }
+        if (ship.controls.rotateRight) {
+            ship.angularVelocity += 0.1;
+        }
+    }
+    
+    ship.rotation += ship.angularVelocity;
+    ship.angularVelocity *= 0.9; // Damping
+    
+    // Thrust
+    if (ship.controls && ship.controls.thrust) {
+        ship.thrust = Math.min(1, ship.thrust + 0.1);
+        ship.velocity.x += Math.cos(ship.rotation) * ship.thrust * 0.5;
+        ship.velocity.y += Math.sin(ship.rotation) * ship.thrust * 0.5;
+    } else {
+        ship.thrust = Math.max(0, ship.thrust - 0.05);
+    }
+    
+    // Apply velocity
+    ship.x += ship.velocity.x;
+    ship.y += ship.velocity.y;
+    
+    // Friction
+    ship.velocity.x *= 0.99;
+    ship.velocity.y *= 0.99;
+    
+    // Boundary wrapping
+    if (ship.x < 0) ship.x = MAP_WIDTH;
+    if (ship.x > MAP_WIDTH) ship.x = 0;
+    if (ship.y < 0) ship.y = MAP_HEIGHT;
+    if (ship.y > MAP_HEIGHT) ship.y = 0;
+    
+    // Update cooldowns
+    Object.values(ship.weapons).forEach(weapon => {
+        if (weapon.cooldown > 0) weapon.cooldown--;
+    });
+    
+    // Shield regeneration
+    if (ship.shield < ship.maxShield) {
+        ship.shield = Math.min(ship.maxShield, ship.shield + 0.05);
+    }
+    
+    // Energy regeneration
+    if (ship.energy < ship.maxEnergy) {
+        ship.energy = Math.min(ship.maxEnergy, ship.energy + 0.1);
+    }
+}
+
+// Projectile Update Logic
+function updateProjectiles() {
+    for (let i = gameState.projectiles.length - 1; i >= 0; i--) {
+        const proj = gameState.projectiles[i];
+        
+        // Move projectile
+        proj.x += proj.velocity.x;
+        proj.y += proj.velocity.y;
+        proj.lifetime--;
+        
+        // Check collision with ships
+        gameState.ships.forEach((ship, shipId) => {
+            if (shipId !== proj.shipId) {
+                const dx = ship.x - proj.x;
+                const dy = ship.y - proj.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < 20) {
+                    // Hit detected
+                    proj.lifetime = 0;
+                    
+                    if (ship.shield > 0) {
+                        ship.shield = Math.max(0, ship.shield - proj.damage);
+                    } else {
+                        ship.health -= proj.damage;
+                        
+                        if (ship.health <= 0) {
+                            // Ship destroyed
+                            handleShipDestruction(shipId, proj.shipId);
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Remove expired or out of bounds projectiles
+        if (proj.lifetime <= 0 ||
+            proj.x < 0 || proj.x > MAP_WIDTH ||
+            proj.y < 0 || proj.y > MAP_HEIGHT) {
+            gameState.projectiles.splice(i, 1);
+        }
+    }
+}
+
+function handleShipDestruction(destroyedShipId, killerShipId) {
+    const destroyedShip = gameState.ships.get(destroyedShipId);
+    const killerShip = gameState.ships.get(killerShipId);
+    
+    if (destroyedShip) {
+        const player = gameState.players.get(destroyedShip.playerId);
+        if (player) {
+            player.deaths++;
+            player.score = Math.max(0, player.score - 50);
+            
+            // Respawn after delay
+            setTimeout(() => {
+                if (gameState.players.has(destroyedShip.playerId)) {
+                    createShip(destroyedShip.playerId, player.team);
+                }
+            }, 5000);
+        }
+        
+        gameState.ships.delete(destroyedShipId);
+    }
+    
+    if (killerShip) {
+        const killerPlayer = gameState.players.get(killerShip.playerId);
+        if (killerPlayer) {
+            killerPlayer.kills++;
+            killerPlayer.score += 100;
+            
+            // Update team score
+            if (killerShip.team !== 'neutral') {
+                gameState.teams[killerShip.team].score += 100;
+            }
+        }
+    }
+}
+
+// Serialize game state for network transmission
+function serializeGameState() {
+    return {
+        players: Array.from(gameState.players.entries()).map(([id, player]) => ({
+            id,
+            name: player.name,
+            color: player.color,
+            team: player.team,
+            score: player.score,
+            connected: player.connected
+        })),
+        ships: Array.from(gameState.ships.entries()).map(([id, ship]) => ({
+            id,
+            playerId: ship.playerId,
+            team: ship.team,
+            x: Math.round(ship.x * 100) / 100,
+            y: Math.round(ship.y * 100) / 100,
+            rotation: Math.round(ship.rotation * 1000) / 1000,
+            health: ship.health,
+            shield: Math.round(ship.shield),
+            color: ship.color
+        })),
+        asteroids: gameState.asteroids.map(a => ({
+            id: a.id,
+            x: Math.round(a.x * 100) / 100,
+            y: Math.round(a.y * 100) / 100,
+            radius: Math.round(a.radius),
+            rotation: Math.round(a.rotation * 1000) / 1000
+        })),
+        projectiles: gameState.projectiles.map(p => ({
+            id: p.id,
+            team: p.team,
+            x: Math.round(p.x * 100) / 100,
+            y: Math.round(p.y * 100) / 100,
+            velocityX: Math.round(p.velocity.x * 100) / 100,
+            velocityY: Math.round(p.velocity.y * 100) / 100
+        })),
+        teams: {
+            red: { score: gameState.teams.red.score },
+            blue: { score: gameState.teams.blue.score }
+        },
+        gamePhase: gameState.gamePhase,
+        timestamp: Date.now()
+    };
+}
+
+// Initialize game
+initializeAsteroids();
+
+// Start game loop at specified tick rate
+setInterval(gameLoop, 1000 / GAME_TICK_RATE);
+
+// Clean up idle connections periodically
+setInterval(() => {
+    const now = Date.now();
+    let suspiciousCount = 0;
+    
+    gameState.players.forEach((player, id) => {
+        if (now - player.lastHeartbeat > 60000) {
+            suspiciousCount++;
+        }
+    });
+    
+    if (suspiciousCount > 5) {
+        // Only log in development to avoid noise in production
+        if (process.env.NODE_ENV === 'development') {
+            console.warn(`High number of inactive connections: ${suspiciousCount}`);
+        }
+    }
+}, 30000);
 
 // Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Cosmic Deception server running on http://localhost:${PORT}`);
+    console.log(`Cosmic Deception server running on port ${PORT}`);
+    console.log(`Map size: ${MAP_WIDTH}x${MAP_HEIGHT}`);
+    console.log(`Max players: ${MAX_PLAYERS}`);
 });
