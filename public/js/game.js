@@ -122,10 +122,27 @@ class Game {
       } else {
         console.error(`[Game] MISSING: ${screenId}`);
       }
-    });
-    
-    console.log('[Game] Managing screen visibility...');
-    this.showScreen('splash');
+     });
+
+    // CRITICAL: Check if CSS loaded by verifying computed styles
+    console.log('[Game] Checking if CSS loaded properly...');
+    const splashScreen = document.getElementById('splash-screen');
+    if (splashScreen) {
+      const computedDisplay = window.getComputedStyle(splashScreen).display;
+      const computedPosition = window.getComputedStyle(splashScreen).position;
+      console.log(`[Game] Splash screen computed styles - display: ${computedDisplay}, position: ${computedPosition}`);
+      
+      if (computedDisplay === 'none' && computedPosition === 'absolute') {
+        console.log('[Game] ✓ CSS loaded successfully - styles are applied');
+      } else if (computedDisplay === 'block' || computedDisplay === 'flex') {
+        console.log('[Game] ⚠ CSS may not be loaded - inline fallback styles detected');
+        console.log('[Game] Action needed: Check if css/style.css exists on GitHub');
+      } else {
+        console.log(`[Game] ? Unknown CSS state - display is: ${computedDisplay}`);
+      }
+    }
+
+    console.log('[Game] Managing screen visibility...');    this.showScreen('splash');
     console.log('[Game] Screen visibility set to splash');
     
     // Setup canvas first (critical for rendering)
