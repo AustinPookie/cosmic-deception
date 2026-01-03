@@ -1,13 +1,16 @@
 /**
  * Cosmic Deception - Main Game Logic
+ * Among Us-style mobile game with voice chat
  */
 
 class Game {
   constructor() {
+    // Socket connection
     this.socket = io();
     this.playerId = null;
     this.roomCode = null;
     
+    // Game state
     this.state = {
       phase: 'lobby',
       players: [],
@@ -19,18 +22,22 @@ class Game {
       voteTarget: null
     };
     
+    // Canvas and rendering
     this.canvas = document.getElementById('game-canvas');
     this.ctx = this.canvas.getContext('2d');
     this.camera = { x: 0, y: 0 };
     this.scale = 1;
     
+    // Controls
     this.joystick = null;
     this.moveDirection = { x: 0, y: 0 };
     this.moveSpeed = 4;
     
+    // Voice chat
     this.voiceChat = null;
     this.isVoiceMuted = false;
     
+    // UI elements
     this.screens = {
       splash: document.getElementById('splash-screen'),
       menu: document.getElementById('menu-screen'),
@@ -40,6 +47,7 @@ class Game {
       gameover: document.getElementById('gameover-screen')
     };
     
+    // Player colors
     this.colors = [
       '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
       '#FFA500', '#800080', '#008000', '#000080', '#FFC0CB', '#A52A2A',
@@ -47,13 +55,14 @@ class Game {
       '#FFD700', '#ADFF2F'
     ];
     
+    // Map configurations
     this.maps = {
       skeld: {
         name: 'The Skeld',
         width: 1600,
         height: 1200,
         backgroundColor: '#1a1a2e',
-        walls: [],
+        walls: this.generateSkeldWalls(),
         spawnPoints: [
           { x: 800, y: 600 },
           { x: 400, y: 300 },
@@ -71,6 +80,19 @@ class Game {
       }
     };
     
+    // Task definitions
+    this.taskTemplates = [
+      { id: 'fix_wires', name: 'Fix Wires', type: 'short', duration: 3000 },
+      { id: 'fuel_engine', name: 'Fuel Engine', type: 'long', duration: 6000 },
+      { id: 'clean_filter', name: 'Clean Filter', type: 'medium', duration: 4500 },
+      { id: 'align_output', name: 'Align Output', type: 'short', duration: 3000 },
+      { id: 'divert_power', name: 'Divert Power', type: 'medium', duration: 4500 },
+      { id: 'unlock_manifolds', name: 'Unlock Manifolds', type: 'short', duration: 2500 },
+      { id: 'start_reactor', name: 'Start Reactor', type: 'medium', duration: 5000 },
+      { id: 'calibrate_distributor', name: 'Calibrate Distributor', type: 'long', duration: 7000 }
+    ];
+    
+    // Initialize
     this.init();
   }
   
@@ -79,7 +101,51 @@ class Game {
     this.setupEventListeners();
     this.setupSocketListeners();
     this.setupJoystick();
+    
+    // Start game loop
     this.gameLoop();
+  }
+  
+  generateSkeldWalls() {
+    // Simplified wall data for The Skeld
+    return [
+      // Outer walls
+      { x: 0, y: 0, width: 1600, height: 20 },
+      { x: 0, y: 1180, width: 1600, height: 20 },
+      { x: 0, y: 0, width: 20, height: 1200 },
+      { x: 1580, y: 0, width: 20, height: 1200 },
+      
+      // Cafeteria walls
+      { x: 600, y: 400, width: 20, height: 400 },
+      { x: 1000, y: 400, width: 20, height: 400 },
+      
+      // Admin walls
+      { x: 200, y: 200, width: 400, height: 20 },
+      { x: 200, y: 200, width: 20, height: 200 },
+      
+      // Navigation walls
+      { x: 1000, y: 100, width: 20, height: 300 },
+      { x: 1200, y: 100, width: 300, height: 20 },
+      
+      // Shields walls
+      { x: 200, y: 800, width: 20, height: 300 },
+      { x: 200, y: 800, width: 300, height: 20 },
+      
+      // Storage walls
+      { x: 1300, y: 700, width: 20, height: 400 },
+      { x: 1300, y: 700, width: 300, height: 20 },
+      
+      // Reactor walls
+      { x: 700, y: 100, width: 20, height: 200 },
+      { x: 900, y: 100, width: 20, height: 200 },
+      
+      // Electrical walls
+      { x: 700, y: 900, width: 200, height: 20 },
+      { x: 700, y: 900, width: 20, height: 200 },
+      
+      // Medbay walls
+      { x: 400, y: 500, width: 200, height: 20 },
+    ];
   }
   
   setupCanvas() {
@@ -98,10 +164,12 @@ class Game {
   }
   
   setupEventListeners() {
+    // Splash screen
     document.getElementById('play-btn').addEventListener('click', () => {
       this.showScreen('menu');
     });
     
+    // Menu screen
     document.getElementById('create-room-btn').addEventListener('click', () => {
       this.createRoom();
     });
@@ -115,6 +183,7 @@ class Game {
       }
     });
     
+    // Lobby screen
     document.getElementById('player-name-input').addEventListener('input', (e) => {
       this.updatePlayerName(e.target.value);
     });
@@ -132,6 +201,7 @@ class Game {
       this.showToast('Room code copied!', 'success');
     });
     
+    // Game screen
     document.getElementById('action-btn').addEventListener('click', () => {
       this.handleAction();
     });
@@ -145,9 +215,14 @@ class Game {
     });
     
     document.getElementById('mute-btn').addEventListener('click', () => {
+      if (!this.voiceChat) {
+        this.showToast('Voice chat not initialized', 'warning');
+        return;
+      }
       this.toggleMute();
     });
     
+    // Meeting screen
     document.getElementById('skip-vote-btn').addEventListener('click', () => {
       this.skipVote();
     });
@@ -156,10 +231,12 @@ class Game {
       this.confirmVote();
     });
     
+    // Game over screen
     document.getElementById('return-lobby-btn').addEventListener('click', () => {
       this.returnToLobby();
     });
     
+    // Settings modal
     document.getElementById('settings-btn').addEventListener('click', () => {
       this.showModal('settings-modal');
     });
@@ -168,6 +245,11 @@ class Game {
       this.hideModal('settings-modal');
     });
     
+    document.getElementById('save-settings').addEventListener('click', () => {
+      this.saveSettings();
+    });
+    
+    // Voice modal
     document.getElementById('close-voice-modal').addEventListener('click', () => {
       this.hideModal('voice-modal');
     });
@@ -176,12 +258,14 @@ class Game {
       this.toggleMute();
     });
     
+    // Task modal
     document.getElementById('close-task-modal').addEventListener('click', () => {
       this.hideModal('task-modal');
     });
   }
   
   setupSocketListeners() {
+    // Join room
     this.socket.on('roomJoined', (response) => {
       if (response.success) {
         this.playerId = response.playerId;
@@ -203,12 +287,14 @@ class Game {
       }
     });
     
+    // Player joined
     this.socket.on('playerJoined', (player) => {
       this.state.players.push(player);
       this.updatePlayerList();
       this.showToast(`${player.name} joined the game`, 'success');
     });
     
+    // Player left
     this.socket.on('playerLeft', (data) => {
       const player = this.state.players.find(p => p.id === data.playerId);
       if (player) {
@@ -218,6 +304,7 @@ class Game {
       this.updatePlayerList();
     });
     
+    // Player updated
     this.socket.on('playerUpdated', (data) => {
       const player = this.state.players.find(p => p.id === data.playerId);
       if (player) {
@@ -226,13 +313,16 @@ class Game {
       }
     });
     
+    // Host changed
     this.socket.on('hostChanged', (data) => {
       const player = this.state.players.find(p => p.id === data.newHostId);
       if (player) {
-        document.getElementById('start-game-btn').disabled = (this.socket.id !== player.socketId);
+        this.showToast(`${player.name} is now the host`, 'success');
       }
+      document.getElementById('start-game-btn').disabled = (this.socket.id !== player?.socketId);
     });
     
+    // Game started
     this.socket.on('gameStarted', (data) => {
       this.state.players = data.players;
       this.state.tasks = data.tasks;
@@ -241,13 +331,19 @@ class Game {
       this.state.voted = false;
       this.state.voteTarget = null;
       
+      // Initialize voice chat
       this.initVoiceChat();
       
+      // Update local player reference
       this.state.localPlayer = this.state.players.find(p => p.id === this.playerId);
       
+      // Show game screen
       this.showScreen('game');
+      
+      // Update task progress
       this.updateTaskProgress(0, data.totalTasks);
       
+      // Show role notification
       if (this.state.localPlayer.role === 'imposter') {
         this.showToast('You are the IMPOSTER!', 'error');
       } else {
@@ -255,6 +351,7 @@ class Game {
       }
     });
     
+    // Player moved
     this.socket.on('playerMoved', (data) => {
       const player = this.state.players.find(p => p.id === data.playerId);
       if (player) {
@@ -263,6 +360,7 @@ class Game {
       }
     });
     
+    // Task completed
     this.socket.on('taskCompleted', (data) => {
       this.updateTaskProgress(data.progress, data.totalTasks);
       
@@ -272,23 +370,27 @@ class Game {
       }
     });
     
+    // Player killed
     this.socket.on('playerKilled', (data) => {
       const player = this.state.players.find(p => p.id === data.playerId);
       if (player) {
         player.isAlive = false;
         this.showToast(`${player.name} was killed!`, 'error');
         
+        // Remove player from voice chat
         if (this.voiceChat) {
           this.voiceChat.disconnectFromPeer(data.playerId);
         }
       }
     });
     
+    // Meeting called
     this.socket.on('meetingCalled', (data) => {
       this.state.phase = 'meeting';
       this.showMeetingScreen(data);
     });
     
+    // Meeting ended
     this.socket.on('meetingEnded', (results) => {
       this.state.phase = 'tasks';
       this.showScreen('game');
@@ -297,10 +399,12 @@ class Game {
         this.showToast(`${results.ejected.name} was ejected!`, 'warning');
       }
       
+      // Reset voting state
       this.state.voted = false;
       this.state.voteTarget = null;
     });
     
+    // Game over
     this.socket.on('gameOver', (data) => {
       this.state.phase = 'game_over';
       this.showGameOverScreen(data);
@@ -345,6 +449,9 @@ class Game {
         if (player) {
           console.log(`Disconnected from voice with ${player.name}`);
         }
+      },
+      onSpeaking: (playerId, isSpeaking) => {
+        // Update UI to show who's speaking
       }
     });
     
@@ -360,6 +467,7 @@ class Game {
     
     this.socket.emit('createRoom', settings, (response) => {
       if (response && response.success) {
+        // Automatically join the created room
         this.joinRoom(response.roomCode);
       } else {
         this.showToast('Failed to create room', 'error');
@@ -424,7 +532,7 @@ class Game {
     
     document.getElementById('player-count').textContent = this.state.players.length;
     
-    this.state.players.forEach((player) => {
+    this.state.players.forEach((player, index) => {
       const card = document.createElement('div');
       card.className = 'player-card';
       if (this.socket.id === player.socketId) {
@@ -437,6 +545,7 @@ class Game {
           <div class="player-name">${player.name}</div>
           <div class="player-status">${this.socket.id === player.socketId ? 'You' : ''}</div>
         </div>
+        ${this.socket.id === player.socketId ? '<span class="player-badge">👤</span>' : ''}
       `;
       
       list.appendChild(card);
@@ -457,6 +566,7 @@ class Game {
     this.roomCode = null;
     this.playerId = null;
     
+    // Disconnect voice chat
     if (this.voiceChat) {
       this.voiceChat.disconnect();
       this.voiceChat = null;
@@ -469,30 +579,45 @@ class Game {
     const player = this.state.localPlayer;
     if (!player || !player.isAlive) return;
     
+    // Find closest interactable object
+    let closestTask = null;
+    let closestTaskDist = Infinity;
+    let closestBody = null;
+    let closestBodyDist = Infinity;
+    
+    // Check for nearby tasks
     for (const task of this.state.tasks) {
       if (task.assignedTo === this.playerId && !task.completed) {
         const dx = player.x - task.x;
         const dy = player.y - task.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
-        if (distance < 60) {
-          this.showTaskModal(task);
-          return;
+        if (distance < 60 && distance < closestTaskDist) {
+          closestTask = task;
+          closestTaskDist = distance;
         }
       }
     }
     
+    // Check for dead bodies
     for (const otherPlayer of this.state.players) {
       if (otherPlayer.id !== this.playerId && !otherPlayer.isAlive) {
         const dx = player.x - otherPlayer.x;
         const dy = player.y - otherPlayer.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
-        if (distance < 60) {
-          this.reportBody();
-          return;
+        if (distance < 60 && distance < closestBodyDist) {
+          closestBody = otherPlayer;
+          closestBodyDist = distance;
         }
       }
+    }
+    
+    // Prioritize bodies over tasks
+    if (closestBody && closestBodyDist < closestTaskDist) {
+      this.reportBody();
+    } else if (closestTask) {
+      this.showTaskModal(closestTask);
     }
   }
   
@@ -523,6 +648,7 @@ class Game {
     
     const container = document.getElementById('task-container');
     
+    // Create different task types
     if (task.id.includes('wire')) {
       this.createWireTask(container, task);
     } else {
@@ -535,13 +661,17 @@ class Game {
         </div>
       `;
       
+      // Simple click task
       let clicks = 0;
       const totalClicks = 5;
       
       const clickHandler = () => {
         clicks++;
         const progress = (clicks / totalClicks) * 100;
-        document.getElementById('task-modal-progress').style.width = `${progress}%`;
+        const progressBar = document.getElementById('task-modal-progress');
+        if (progressBar) {
+          progressBar.style.width = `${progress}%`;
+        }
         
         if (clicks >= totalClicks) {
           container.removeEventListener('click', clickHandler);
@@ -595,6 +725,7 @@ class Game {
           const color2 = clickedWire.dataset.color;
           
           if (color1 === color2 && selectedWire.dataset.side !== clickedWire.dataset.side) {
+            // Correct connection
             connected++;
             selectedWire.style.opacity = '0.3';
             clickedWire.style.opacity = '0.3';
@@ -606,6 +737,7 @@ class Game {
               this.hideModal('task-modal');
             }
           } else {
+            // Wrong connection
             this.showToast('Wrong connection!', 'error');
             selectedWire.classList.remove('selected');
             selectedWire = null;
@@ -673,8 +805,11 @@ class Game {
         if (phase.textContent === 'Discussion') {
           phase.textContent = 'Voting';
           timeLeft = votingTime;
+          
+          // Enable skip vote button
           document.getElementById('skip-vote-btn').disabled = false;
           
+          // Auto-end meeting if everyone voted
           if (!this.state.voted) {
             this.showToast('Submit your vote!', 'warning');
           }
@@ -737,6 +872,7 @@ class Game {
     
     this.showScreen('gameover');
     
+    // Disconnect voice chat
     if (this.voiceChat) {
       this.voiceChat.disconnect();
       this.voiceChat = null;
@@ -747,6 +883,7 @@ class Game {
     this.showScreen('lobby');
     this.state.phase = 'lobby';
     
+    // Reset player states
     this.state.players.forEach(p => {
       p.isAlive = true;
       p.role = 'crewmate';
@@ -812,6 +949,13 @@ class Game {
     }, 3000);
   }
   
+  saveSettings() {
+    // Settings are saved in the modal state
+    this.hideModal('settings-modal');
+    this.showToast('Settings saved!', 'success');
+  }
+  
+  // Game loop
   gameLoop() {
     this.update();
     this.render();
@@ -824,22 +968,49 @@ class Game {
     const player = this.state.localPlayer;
     if (!player || !player.isAlive) return;
     
+    // Apply movement
     if (this.moveDirection.x !== 0 || this.moveDirection.y !== 0) {
       const map = this.maps[this.state.map];
       
       let newX = player.x + this.moveDirection.x * this.moveSpeed;
       let newY = player.y + this.moveDirection.y * this.moveSpeed;
       
+      // Boundary check
       newX = Math.max(20, Math.min(map.width - 20, newX));
       newY = Math.max(20, Math.min(map.height - 20, newY));
       
-      player.x = newX;
-      player.y = newY;
-      
-      this.socket.emit('playerMove', { x: player.x, y: player.y });
+      // Simple wall collision
+      const wall = this.checkWallCollision(newX, newY, 20);
+      if (!wall) {
+        player.x = newX;
+        player.y = newY;
+        
+        // Send movement to server
+        this.socket.emit('playerMove', { x: player.x, y: player.y });
+      }
     }
     
+    // Update action button state
     this.updateActionButtonState();
+  }
+  
+  checkWallCollision(x, y, radius) {
+    const map = this.maps[this.state.map];
+    
+    for (const wall of map.walls) {
+      const closestX = Math.max(wall.x, Math.min(x, wall.x + wall.width));
+      const closestY = Math.max(wall.y, Math.min(y, wall.y + wall.height));
+      
+      const dx = x - closestX;
+      const dy = y - closestY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < radius) {
+        return wall;
+      }
+    }
+    
+    return null;
   }
   
   updateActionButtonState() {
@@ -853,6 +1024,7 @@ class Game {
     
     let canInteract = false;
     
+    // Check for nearby tasks
     for (const task of this.state.tasks) {
       if (task.assignedTo === this.playerId && !task.completed) {
         const dx = player.x - task.x;
@@ -864,6 +1036,7 @@ class Game {
       }
     }
     
+    // Check for dead bodies
     if (!canInteract) {
       for (const otherPlayer of this.state.players) {
         if (otherPlayer.id !== this.playerId && !otherPlayer.isAlive) {
@@ -891,46 +1064,38 @@ class Game {
     const canvas = this.canvas;
     const map = this.maps[this.state.map];
     
+    // Clear canvas
     ctx.fillStyle = '#0a0a1a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
+    // Calculate camera position
     const player = this.state.localPlayer;
     if (player) {
       this.camera.x = player.x - canvas.width / 2;
       this.camera.y = player.y - canvas.height / 2;
     }
     
+    // Apply camera transform
     ctx.save();
     ctx.translate(-this.camera.x, -this.camera.y);
     
+    // Draw map background
     ctx.fillStyle = map.backgroundColor;
     ctx.fillRect(0, 0, map.width, map.height);
     
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-    ctx.lineWidth = 1;
+    // Draw floor pattern
+    this.drawFloorPattern();
     
-    for (let x = 0; x < map.width; x += 50) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, map.height);
-      ctx.stroke();
-    }
-    
-    for (let y = 0; y < map.height; y += 50) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(map.width, y);
-      ctx.stroke();
-    }
-    
+    // Draw walls
+    ctx.fillStyle = '#334155';
     map.walls.forEach(wall => {
-      ctx.fillStyle = '#334155';
       ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
       ctx.strokeStyle = '#475569';
       ctx.lineWidth = 2;
       ctx.strokeRect(wall.x, wall.y, wall.width, wall.height);
     });
     
+    // Draw tasks
     this.state.tasks.forEach(task => {
       if (!task.completed) {
         const isNearby = player && 
@@ -948,6 +1113,7 @@ class Game {
       }
     });
     
+    // Draw vents
     map.vents.forEach(vent => {
       ctx.fillStyle = '#1E293B';
       ctx.beginPath();
@@ -958,52 +1124,71 @@ class Game {
       ctx.stroke();
     });
     
+    // Draw players (sorted by Y for depth)
     const sortedPlayers = [...this.state.players].sort((a, b) => a.y - b.y);
     
     sortedPlayers.forEach(p => {
       this.drawPlayer(p);
     });
     
+    // Draw vision cone for local player
     if (player && player.isAlive) {
-      const gradient = ctx.createRadialGradient(
-        player.x, player.y, 0,
-        player.x, player.y, 300
-      );
-      gradient.addColorStop(0, 'rgba(255, 255, 255, 0.1)');
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-      
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(player.x, player.y, 300, 0, Math.PI * 2);
-      ctx.fill();
+      this.drawVisionCone(player);
     }
     
     ctx.restore();
   }
   
+  drawFloorPattern() {
+    const ctx = this.ctx;
+    const map = this.maps[this.state.map];
+    
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+    ctx.lineWidth = 1;
+    
+    for (let x = 0; x < map.width; x += 50) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, map.height);
+      ctx.stroke();
+    }
+    
+    for (let y = 0; y < map.height; y += 50) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(map.width, y);
+      ctx.stroke();
+    }
+  }
+  
   drawPlayer(player) {
     const ctx = this.ctx;
     
+    // Draw shadow
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.beginPath();
     ctx.ellipse(player.x, player.y + 18, 18, 8, 0, 0, Math.PI * 2);
     ctx.fill();
     
+    // Draw body
     ctx.fillStyle = player.color;
     ctx.beginPath();
     ctx.arc(player.x, player.y, 20, 0, Math.PI * 2);
     ctx.fill();
     
+    // Draw visor
     ctx.fillStyle = '#87CEEB';
     ctx.beginPath();
     ctx.ellipse(player.x + 5, player.y - 5, 12, 8, -0.2, 0, Math.PI * 2);
     ctx.fill();
     
+    // Draw visor reflection
     ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
     ctx.beginPath();
     ctx.ellipse(player.x + 8, player.y - 7, 4, 3, -0.2, 0, Math.PI * 2);
     ctx.fill();
     
+    // Draw dead indicator
     if (!player.isAlive) {
       ctx.strokeStyle = '#EF4444';
       ctx.lineWidth = 3;
@@ -1015,17 +1200,20 @@ class Game {
       ctx.stroke();
     }
     
+    // Draw name
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 12px Rubik';
     ctx.textAlign = 'center';
     ctx.fillText(player.name, player.x, player.y - 30);
     
+    // Draw role indicator (imposter)
     if (player.role === 'imposter' && player.id === this.playerId) {
       ctx.fillStyle = '#EF4444';
       ctx.font = '10px Rubik';
       ctx.fillText('🔪', player.x, player.y - 45);
     }
     
+    // Draw task indicator
     if (player.isAlive && player.role === 'crewmate' && player.completedTasks > 0) {
       const taskProgress = player.completedTasks;
       ctx.fillStyle = '#10B981';
@@ -1033,8 +1221,26 @@ class Game {
       ctx.fillText(`${'✓'.repeat(Math.min(taskProgress, 5))}`, player.x, player.y + 35);
     }
   }
+  
+  drawVisionCone(player) {
+    const ctx = this.ctx;
+    
+    // Create gradient for vision
+    const gradient = ctx.createRadialGradient(
+      player.x, player.y, 0,
+      player.x, player.y, 300
+    );
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.1)');
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, 300, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
+// Initialize game when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
   window.game = new Game();
 });
