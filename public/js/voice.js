@@ -36,7 +36,6 @@ class VoiceChat {
       ]
     };
     
-    // Audio processing
     this.speakingThreshold = 0.02;
   }
   
@@ -259,9 +258,9 @@ class VoiceChat {
     const connection = this.peerConnections.get(fromPlayerId);
     
     if (!connection) return;
-    
+      await connection.pc    
     try {
-      await connection.pc.setRemoteDescription(new RTCSessionDescription(answer));
+.setRemoteDescription(new RTCSessionDescription(answer));
     } catch (error) {
       console.error('Error handling answer:', error);
     }
