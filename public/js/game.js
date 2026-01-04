@@ -30,6 +30,9 @@ class Game {
     this.meetingEndTime = null;
     this.emergencyCooldown = 0;
     
+    // Rendering state
+    this.canvasResized = false;
+    
     // Canvas and rendering
     this.canvas = document.getElementById('game-canvas');
     this.ctx = this.canvas.getContext('2d');
@@ -43,7 +46,7 @@ class Game {
     
     // Voice chat
     this.voiceChat = null;
-    this.isVoiceMuted = false;
+    this.isMuted = false;
     
     // UI elements
     this.screens = {
@@ -256,7 +259,10 @@ class Game {
     };
     
     resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
+    
+    // Store resize handler reference for cleanup
+    this._resizeHandler = resizeCanvas;
+    window.addEventListener('resize', this._resizeHandler);
     console.log('[Game] Canvas setup complete');
   }
   
@@ -542,6 +548,11 @@ class Game {
       this.state.voteTarget = null;
       
       // Initialize voice chat
+      // Clear any existing meeting timer first to prevent leaks
+      if (this.meetingTimer) {
+        clearInterval(this.meetingTimer);
+        this.meetingTimer = null;
+      }
       this.initVoiceChat();
       
       // Update local player reference
@@ -746,7 +757,8 @@ class Game {
           opt.classList.remove('selected');
         });
         option.classList.add('selected');
-        this.updatePlayerColor(color);
+        // Persist color selection and update server
+        this.persistColorSelection(color);
       });
       
       selector.appendChild(option);
@@ -817,11 +829,38 @@ class Game {
     this.roomCode = null;
     this.playerId = null;
     
+    // Clean up joystick
+    if (this.joystick) {
+      this.joystick.destroy();
+      this.joystick = null;
+    }
+    
+    // Reset move direction
+    this.moveDirection = { x: 0, y: 0 };
+    
     // Disconnect voice chat
     if (this.voiceChat) {
       this.voiceChat.disconnect();
       this.voiceChat = null;
     }
+    
+    // Clear meeting timer
+    if (this.meetingTimer) {
+      clearInterval(this.meetingTimer);
+      this.meetingTimer = null;
+    }
+    
+    // Reset game state
+    this.state.phase = 'lobby';
+    this.state.players = [];
+    this.state.tasks = [];
+    this.state.imposters = [];
+    this.state.localPlayer = null;
+    this.state.voted = false;
+    this.state.voteTarget = null;
+    
+    // Reset mute state
+    this.isMuted = false;
   }
   
   handleAction() {
@@ -1219,6 +1258,15 @@ class Game {
   }
   
   returnToLobby() {
+    // Clean up joystick
+    if (this.joystick) {
+      this.joystick.destroy();
+      this.joystick = null;
+    }
+    
+    // Reset move direction
+    this.moveDirection = { x: 0, y: 0 };
+    
     // Clear player list for fresh game state
     this.state.players = [];
     this.state.tasks = [];
@@ -1238,16 +1286,18 @@ class Game {
     this.emergencyCooldown = 0;
     this.meetingEndTime = null;
     
-    // Reset player states (for any remaining players)
-    this.state.players.forEach(p => {
-      p.isAlive = true;
-      p.role = 'crewmate';
-      p.votedFor = null;
-    });
-    
     // Reset voting state
     this.state.voted = false;
     this.state.voteTarget = null;
+    
+    // Disconnect voice chat
+    if (this.voiceChat) {
+      this.voiceChat.disconnect();
+      this.voiceChat = null;
+    }
+    
+    // Reset mute state
+    this.isMuted = false;
   }
   
   toggleVoiceModal() {
@@ -1255,7 +1305,10 @@ class Game {
   }
   
   toggleMute() {
-    if (!this.voiceChat) return;
+    if (!this.voiceChat) {
+      this.showToast('Voice chat not initialized', 'warning');
+      return;
+    }
     
     this.isMuted = this.voiceChat.toggleMute();
     
@@ -1341,7 +1394,9 @@ class Game {
     
     // Check if toast container exists
     if (!container) {
-      console.warn(`[Game] Toast container not found, logging message: ${message}`);
+      // Create fallback toast display
+      console.warn(`[Game] Toast container not found, using fallback`);
+      this.showFallbackToast(message, type);
       return;
     }
     
@@ -1352,6 +1407,32 @@ class Game {
     
     setTimeout(() => {
       toast.remove();
+    }, 3000);
+  }
+  
+  showFallbackToast(message, type) {
+    // Fallback toast using alert for critical messages when UI is not ready
+    console.log(`[Toast ${type}]: ${message}`);
+    // Optionally create a temporary container
+    let tempContainer = document.getElementById('toast-container-temp');
+    if (!tempContainer) {
+      tempContainer = document.createElement('div');
+      tempContainer.id = 'toast-container-temp';
+      tempContainer.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999;';
+      document.body.appendChild(tempContainer);
+    }
+    
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.style.cssText = `background:#1E293B;color:#F8FAFC;padding:12px 24px;border-radius:8px;margin-bottom:10px;box-shadow:0 4px 12px rgba(0,0,0,0.3);border-left:4px solid ${type === 'error' ? '#EF4444' : type === 'success' ? '#10B981' : '#F59E0B'};`;
+    toast.textContent = message;
+    tempContainer.appendChild(toast);
+    
+    setTimeout(() => {
+      toast.remove();
+      if (tempContainer.children.length === 0) {
+        tempContainer.remove();
+      }
     }, 3000);
   }
   
@@ -2021,6 +2102,160 @@ class Game {
     const B = Math.max(0, (num & 0x0000FF) - amt);
     return '#' + (0x1000000 + R * 0x10000 + G * 0x100 + B).toString(16).slice(1);
   }
+  
+  /**
+   * Complete game cleanup - use this when destroying the game entirely
+   */
+  destroy() {
+    console.log('[Game] Destroying game instance...');
+    
+    // Clean up joystick
+    if (this.joystick) {
+      this.joystick.destroy();
+      this.joystick = null;
+    }
+    
+    // Remove resize event listener
+    if (this._resizeHandler) {
+      window.removeEventListener('resize', this._resizeHandler);
+      this._resizeHandler = null;
+    }
+    
+    // Clear meeting timer
+    if (this.meetingTimer) {
+      clearInterval(this.meetingTimer);
+      this.meetingTimer = null;
+    }
+    
+    // Disconnect voice chat
+    if (this.voiceChat) {
+      this.voiceChat.disconnect();
+      this.voiceChat = null;
+    }
+    
+    // Reset game state
+    this.state.phase = 'lobby';
+    this.state.players = [];
+    this.state.tasks = [];
+    this.state.imposters = [];
+    this.state.localPlayer = null;
+    this.moveDirection = { x: 0, y: 0 };
+    
+    // Reset socket listeners setup flag for potential re-initialization
+    this.socketListenersSetup = false;
+    
+    console.log('[Game] Game instance destroyed');
+  }
+  
+  /**
+   * Cleanup method for page unload - mirrors destroy() logic
+   * Called via beforeunload event to ensure proper cleanup
+   */
+  cleanup() {
+    console.log('[Game] Cleanup called before unload...');
+    
+    // Clean up joystick
+    if (this.joystick && typeof this.joystick.destroy === 'function') {
+      this.joystick.destroy();
+      this.joystick = null;
+    }
+    
+    // Remove resize event listener
+    if (this._resizeHandler) {
+      window.removeEventListener('resize', this._resizeHandler);
+      this._resizeHandler = null;
+    }
+    
+    // Clear meeting timer
+    if (this.meetingTimer) {
+      clearInterval(this.meetingTimer);
+      this.meetingTimer = null;
+    }
+    
+    // Disconnect voice chat
+    if (this.voiceChat && typeof this.voiceChat.disconnect === 'function') {
+      this.voiceChat.disconnect();
+      this.voiceChat = null;
+    }
+    
+    console.log('[Game] Cleanup completed');
+  }
+  
+  /**
+   * Setup socket reconnection handling
+   */
+  setupReconnection() {
+    // Handle socket disconnection
+    this.socket.on('disconnect', (reason) => {
+      console.log('[Game] Socket disconnected:', reason);
+      this.showToast('Disconnected from server. Attempting to reconnect...', 'error');
+      
+      // Attempt to reconnect after delay
+      setTimeout(() => {
+        if (this.socket.disconnected) {
+          this.socket.connect();
+        }
+      }, 3000);
+    });
+    
+    // Handle successful reconnection
+    this.socket.on('connect', () => {
+      console.log('[Game] Reconnected to server');
+      this.showToast('Reconnected to server', 'success');
+      
+      // If we were in a game, try to rejoin
+      if (this.roomCode && this.playerId) {
+        this.socket.emit('rejoinGame', {
+          roomCode: this.roomCode,
+          playerId: this.playerId
+        }, (response) => {
+          if (response.success) {
+            this.state.players = response.players;
+            this.state.localPlayer = response.localPlayer;
+            this.showToast('Rejoined game successfully', 'success');
+          } else {
+            this.showToast('Failed to rejoin game', 'error');
+            this.leaveRoom();
+          }
+        });
+      }
+    });
+    
+    // Handle reconnection failure
+    this.socket.on('connect_error', (error) => {
+      console.error('[Game] Connection error:', error);
+    });
+  }
+  
+  /**
+   * Persist selected player color
+   */
+  persistColorSelection(color) {
+    // Store in localStorage for persistence across sessions
+    try {
+      localStorage.setItem('cosmicDeception_playerColor', color);
+    } catch (e) {
+      console.warn('[Game] Could not persist color selection:', e);
+    }
+    
+    // Also update immediately on server
+    this.updatePlayerColor(color);
+  }
+  
+  /**
+   * Load persisted player color
+   */
+  loadPersistedColor() {
+    try {
+      const savedColor = localStorage.getItem('cosmicDeception_playerColor');
+      if (savedColor && this.colors.includes(savedColor)) {
+        return savedColor;
+      }
+    } catch (e) {
+      console.warn('[Game] Could not load persisted color:', e);
+    }
+    return this.colors[0]; // Default to first color
+  }
 }
 
 // Initialize game when DOM is loaded
@@ -2028,8 +2263,39 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('[Game] DOM loaded, creating game instance');
   try {
     window.game = new Game();
+    
+    // Setup reconnection handling after game is created
+    if (window.game && window.game.socket) {
+      window.game.setupReconnection();
+    }
+    
     console.log('[Game] Game instance created successfully');
   } catch (error) {
     console.error('[Game] FATAL: Failed to create game instance:', error);
+  }
+});
+
+// Cleanup on page unload to prevent memory leaks
+window.addEventListener('beforeunload', () => {
+  if (window.game) {
+    // Use cleanup method for faster synchronous cleanup during unload
+    if (typeof window.game.cleanup === 'function') {
+      window.game.cleanup();
+    }
+    // Fallback to destroy if cleanup not available
+    else if (typeof window.game.destroy === 'function') {
+      window.game.destroy();
+    }
+  }
+});
+
+// Handle visibility change (tab switch) to pause/resume if needed
+document.addEventListener('visibilitychange', () => {
+  if (window.game) {
+    if (document.hidden) {
+      console.log('[Game] Page hidden - game continues in background');
+    } else {
+      console.log('[Game] Page visible - checking game state');
+    }
   }
 });
