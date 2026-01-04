@@ -35,12 +35,16 @@ class VoiceChat {
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' }
+        // Add TURN servers via environment variables in production
       ]
     };
     
     this.speakingThreshold = 0.02;
   }
   
+  /**
+   * Initialize voice chat and get user permission for microphone
+   */
   async init() {
     if (this.isInitialized) return;
     
@@ -51,6 +55,7 @@ class VoiceChat {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          // Audio quality settings
           sampleRate: 48000,
           channelCount: 1
         },
@@ -92,6 +97,7 @@ class VoiceChat {
       // Listen for new peers - store reference for cleanup
       const peerIdListener = (data) => {
         if (data.playerId !== this.playerId) {
+          // Connect to the new peer
           this.connectToPeer(data.peerId, data.playerId);
         }
       };
@@ -107,8 +113,11 @@ class VoiceChat {
       
       return true;
     } catch (error) {
+      // Log error for debugging purposes
+      // In production, this should be sent to a monitoring service
       console.error('[VoiceChat] Failed to initialize voice chat:', error);
       
+      // Show user-friendly message for permission denial
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
         this.showPermissionDeniedUI();
       }
@@ -117,11 +126,16 @@ class VoiceChat {
     }
   }
   
+  /**
+   * Show UI notification when microphone permission is denied
+   */
   showPermissionDeniedUI() {
+    // Try to find the game instance to show toast
     if (window.game) {
       window.game.showToast('Microphone access denied. Voice chat disabled.', 'error');
     }
     
+    // Update mute button to show disabled state
     const muteBtn = document.getElementById('mute-btn');
     const voiceBtn = document.getElementById('voice-btn');
     
@@ -134,12 +148,16 @@ class VoiceChat {
       voiceBtn.classList.add('disabled');
     }
     
+    // Add warning class to voice controls
     const voiceControls = document.querySelector('.voice-controls');
     if (voiceControls) {
       voiceControls.classList.add('disabled');
     }
   }
   
+  /**
+   * Connect to a peer
+   */
   connectToPeer(peerId, playerId) {
     if (this.peerConnections.has(playerId)) {
       return; // Already connected
@@ -153,16 +171,19 @@ class VoiceChat {
     const pc = new RTCPeerConnection(config);
     this.peerConnections.set(playerId, { pc, peerId });
     
+    // Add local stream tracks
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
         pc.addTrack(track, this.localStream);
       });
     }
     
+    // Handle incoming tracks
     pc.ontrack = (event) => {
       const stream = event.streams[0];
       this.remoteStreams.set(playerId, stream);
       
+      // Create audio element
       const audio = new Audio();
       audio.srcObject = stream;
       audio.autoplay = true;
@@ -172,6 +193,7 @@ class VoiceChat {
       this.onPeerJoin(playerId);
     };
     
+    // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         this.socket.emit('iceCandidate', {
@@ -181,6 +203,7 @@ class VoiceChat {
       }
     };
     
+    // Handle connection state changes
     pc.onconnectionstatechange = () => {
       console.log(`Connection state with ${playerId}: ${pc.connectionState}`);
       if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
@@ -188,9 +211,13 @@ class VoiceChat {
       }
     };
     
+    // Create and send offer
     this.createOffer(pc, playerId);
   }
   
+  /**
+   * Create offer for peer connection
+   */
   async createOffer(pc, playerId) {
     try {
       const offer = await pc.createOffer({
@@ -206,10 +233,14 @@ class VoiceChat {
         fromPeerId: this.peerId
       });
     } catch (error) {
+      // Log WebRTC offer creation errors for debugging
       console.error('[VoiceChat] Error creating offer:', error);
     }
   }
   
+  /**
+   * Handle incoming offer from peer
+   */
   async handleOffer(data) {
     const { fromPlayerId, offer, fromPeerId } = data;
     
@@ -225,12 +256,14 @@ class VoiceChat {
     const pc = new RTCPeerConnection(config);
     this.peerConnections.set(fromPlayerId, { pc, peerId: fromPeerId });
     
+    // Add local stream
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
         pc.addTrack(track, this.localStream);
       });
     }
     
+    // Handle incoming tracks
     pc.ontrack = (event) => {
       const stream = event.streams[0];
       this.remoteStreams.set(fromPlayerId, stream);
@@ -244,6 +277,7 @@ class VoiceChat {
       this.onPeerJoin(fromPlayerId);
     };
     
+    // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         this.socket.emit('iceCandidate', {
@@ -268,6 +302,9 @@ class VoiceChat {
     }
   }
   
+  /**
+   * Handle answer from peer
+   */
   async handleAnswer(data) {
     const { fromPlayerId, answer } = data;
     const connection = this.peerConnections.get(fromPlayerId);
@@ -281,6 +318,9 @@ class VoiceChat {
     }
   }
   
+  /**
+   * Handle ICE candidate from peer
+   */
   async handleIceCandidate(data) {
     const { fromPlayerId, candidate } = data;
     const connection = this.peerConnections.get(fromPlayerId);
@@ -294,6 +334,9 @@ class VoiceChat {
     }
   }
   
+  /**
+   * Disconnect from a peer
+   */
   disconnectFromPeer(playerId) {
     const connection = this.peerConnections.get(playerId);
     
@@ -313,12 +356,17 @@ class VoiceChat {
     this.onPeerLeave(playerId);
   }
   
+  /**
+   * Handle connection failure
+   */
   handleConnectionFailure(playerId) {
+    // Try to reconnect
     setTimeout(() => {
       const connection = this.peerConnections.get(playerId);
       if (connection && connection.pc.connectionState === 'failed') {
         this.disconnectFromPeer(playerId);
         
+        // Get the peer's peerId from server
         this.socket.emit('getVoicePeers', (response) => {
           if (response.success) {
             const peer = response.peers.find(p => p.playerId === playerId);
@@ -331,6 +379,9 @@ class VoiceChat {
     }, 2000);
   }
   
+  /**
+   * Toggle mute state
+   */
   toggleMute() {
     if (!this.localStream) return false;
     
@@ -343,6 +394,9 @@ class VoiceChat {
     return this.isMuted;
   }
   
+  /**
+   * Set mute state
+   */
   setMute(muted) {
     if (!this.localStream) return;
     
@@ -353,12 +407,16 @@ class VoiceChat {
     });
   }
   
+  /**
+   * Check if user is speaking
+   */
   isSpeaking() {
     if (!this.analyser || this.isMuted) return false;
     
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
     this.analyser.getByteFrequencyData(dataArray);
     
+    // Calculate average volume
     let sum = 0;
     for (let i = 0; i < dataArray.length; i++) {
       sum += dataArray[i];
@@ -368,6 +426,9 @@ class VoiceChat {
     return average > this.speakingThreshold * 255;
   }
   
+  /**
+   * Get speaking level (0-1)
+   */
   getSpeakingLevel() {
     if (!this.analyser || this.isMuted) return 0;
     
@@ -382,6 +443,9 @@ class VoiceChat {
     return Math.min(1, (sum / dataArray.length) / 128);
   }
   
+  /**
+   * Set volume for a specific peer
+   */
   setPeerVolume(playerId, volume) {
     const audio = this.remoteAudios.get(playerId);
     if (audio) {
@@ -389,11 +453,17 @@ class VoiceChat {
     }
   }
   
+  /**
+   * Set proximity volume based on distance
+   */
   setProximityVolume(playerId, distance, maxDistance) {
     const volume = Math.max(0, 1 - (distance / maxDistance));
     this.setPeerVolume(playerId, volume);
   }
   
+  /**
+   * Enable/disable voice chat
+   */
   setEnabled(enabled) {
     this.isEnabled = enabled;
     
@@ -404,6 +474,9 @@ class VoiceChat {
     }
   }
   
+  /**
+   * Clean up and disconnect
+   */
   disconnect() {
     // FIX: Remove all socket event listeners to prevent memory leaks
     this.socketListeners.forEach(({ event, listener }) => {
@@ -443,6 +516,9 @@ class VoiceChat {
     console.log('[VoiceChat] Voice chat disconnected');
   }
   
+  /**
+   * Check if voice chat is supported
+   */
   static isSupported() {
     return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && 
               window.RTCPeerConnection);
